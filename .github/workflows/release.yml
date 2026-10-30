@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build & Release Binary
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Package binary archive
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          ARCHIVE_NAME="hyprannotations-${VERSION}-linux-x86_64.tar.gz"
+          tar -czvf "${ARCHIVE_NAME}" -C target/release hyprannotations
+          sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            hyprannotations-*-linux-x86_64.tar.gz
+            hyprannotations-*-linux-x86_64.tar.gz.sha256
+          generate_release_notes: true
