@@ -103,7 +103,7 @@ fn buttons() -> Vec<Button> {
         });
     }
     buttons.push(Button {
-        x: 548.,
+        x: 542.,
         y: 16.,
         w: 56.,
         h: 56.,
@@ -111,9 +111,9 @@ fn buttons() -> Vec<Button> {
         icon: "desktop",
     });
     buttons.push(Button {
-        x: 626.,
+        x: 610.,
         y: 16.,
-        w: 40.,
+        w: 56.,
         h: 56.,
         action: Action::Exit,
         icon: "cross",
@@ -201,7 +201,6 @@ pub fn draw(pix: &mut Pixmap, app: &App, x: f32, y: f32, scale: f32) {
         let fill = match b.action {
             Action::Color(i) => app.palette.colors[i],
             Action::Picker => app.color,
-            Action::Tool(Tool::Eraser) => [255, 177, 192, 255],
             _ if !enabled => [8, 16, 20, 255],
             _ if selected => [40, 65, 67, 255],
             _ => [6, 15, 20, 255],
@@ -251,20 +250,13 @@ pub fn draw(pix: &mut Pixmap, app: &App, x: f32, y: f32, scale: f32) {
             "eraser" => {
                 lines(
                     pix,
-                    &[(-8., 3.), (2., -8.), (8., -2.), (-2., 8.), (-5., 8.)],
-                    [7, 17, 21, 255],
-                    1.,
-                    it,
-                    true,
-                );
-                lines(
-                    pix,
-                    &[(-4., -1.), (3., 6.)],
-                    [255, 177, 192, 255],
-                    1.,
+                    &[(-7., 3.), (1., -6.), (7., 0.), (-1., 8.), (-7., 3.)],
+                    color,
+                    1.5,
                     it,
                     false,
                 );
+                lines(pix, &[(-3., -1.), (3., 5.)], color, 1.5, it, false);
             }
             "pen" => {
                 lines(
@@ -416,31 +408,36 @@ pub fn draw(pix: &mut Pixmap, app: &App, x: f32, y: f32, scale: f32) {
                 );
             }
             "pointer" => {
+                // Handheld laser pointer aimed up-right, with its beam and spot.
                 lines(
                     pix,
-                    &[(-8., 6.), (-4., 3.), (-1., 4.), (2., 0.)],
-                    [255, 48, 82, 120],
-                    3.,
+                    &[
+                        (-8.4, 5.6),
+                        (-5.6, 8.4),
+                        (2.4, 0.4),
+                        (-0.4, -2.4),
+                        (-8.4, 5.6),
+                    ],
+                    color,
+                    1.5,
                     it,
-                    false,
+                    true,
                 );
-                if let Some(glow) = PathBuilder::from_circle(5., -4., 6.) {
-                    pix.fill_path(
+                lines(pix, &[(2.4, 0.4), (5.2, -2.4)], color, 0.7, it, false);
+                if let Some(glow) = PathBuilder::from_circle(7.6, -4.8, 1.6) {
+                    pix.stroke_path(
                         &glow,
-                        &paint([255, 48, 82, 70]),
-                        FillRule::Winding,
+                        &paint([color[0], color[1], color[2], 100]),
+                        &Stroke {
+                            width: 1.,
+                            ..Stroke::default()
+                        },
                         it,
                         None,
                     );
                 }
-                if let Some(dot) = PathBuilder::from_circle(5., -4., 3.) {
-                    pix.fill_path(
-                        &dot,
-                        &paint([255, 80, 105, 255]),
-                        FillRule::Winding,
-                        it,
-                        None,
-                    );
+                if let Some(dot) = PathBuilder::from_circle(7.6, -4.8, 1.1) {
+                    pix.fill_path(&dot, &paint(color), FillRule::Winding, it, None);
                 }
             }
             "trash" => {
@@ -492,4 +489,24 @@ pub fn hsv(h: f32, s: f32) -> [u8; 4] {
         _ => (1., p, q),
     };
     [(r * 255.) as u8, (g * 255.) as u8, (b * 255.) as u8, 255]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn desktop_and_exit_buttons_have_equal_size() {
+        let buttons = buttons();
+        let desktop = buttons
+            .iter()
+            .find(|button| button.action == Action::Desktop)
+            .expect("desktop button");
+        let exit = buttons
+            .iter()
+            .find(|button| button.action == Action::Exit)
+            .expect("exit button");
+        assert_eq!((desktop.w, desktop.h), (exit.w, exit.h));
+        assert!(exit.x + exit.w <= WIDTH);
+    }
 }
