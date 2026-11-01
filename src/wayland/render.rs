@@ -76,6 +76,12 @@ impl State {
                     };
                     self.renderer.draw(pix, &marker, v.scale);
                 }
+                if self.app.help_visible {
+                    ui::draw_help_background(pix, v.width as f32, v.height as f32, v.scale);
+                    for text in ui::help_text(v.width as f32, v.height as f32) {
+                        self.renderer.draw(pix, &text, v.scale);
+                    }
+                }
             }
             ui::draw(pix, &self.app, tx / ts, ty / ts, ts * v.scale);
             let (buffer, canvas) = self.pool.create_buffer(

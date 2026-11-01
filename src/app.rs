@@ -13,6 +13,7 @@ pub struct App {
     pub palette: crate::config::palette::Palette,
     pub exit: bool,
     pub color_picker: bool,
+    pub help_visible: bool,
 }
 impl App {
     pub fn supports_fill(&self) -> bool {
@@ -36,6 +37,7 @@ impl App {
             palette: crate::config::palette::Palette::default(),
             exit: false,
             color_picker: false,
+            help_visible: false,
         }
     }
     pub fn load_palette(&mut self) {

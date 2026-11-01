@@ -81,6 +81,7 @@ bind = SUPER SHIFT, A, exec, hyprannotations
 | `Tab` | **Desktop Mode** | Pass pointer & keyboard input to desktop windows while keeping drawings visible |
 | `Escape` | **Cancel / Exit** | Cancel active text input, or close the overlay |
 | `Mouse Wheel` | **Stroke Width** | Scroll up/down to increase or decrease stroke size |
+| `F1` | **Shortcut Help** | Show or hide the keyboard shortcut help overlay |
 
 ### Color Palette
 

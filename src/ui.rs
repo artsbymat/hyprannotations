@@ -18,6 +18,32 @@ pub const PICKER_ROWS: usize = 6;
 pub const PICKER_CELL: f32 = 14.0;
 pub const PICKER_WIDTH: f32 = PICKER_COLS as f32 * PICKER_CELL;
 pub const PICKER_HEIGHT: f32 = PICKER_Y + PICKER_ROWS as f32 * PICKER_CELL;
+pub const HELP_WIDTH: f32 = 700.0;
+pub const HELP_HEIGHT: f32 = 520.0;
+const HELP_ROW_HEIGHT: f32 = 34.0;
+const HELP_TOOLS: &[(&str, &str)] = &[
+    ("P", "Pen"),
+    ("H", "Highlighter"),
+    ("E", "Eraser"),
+    ("L", "Line"),
+    ("A", "Arrow"),
+    ("R", "Rectangle"),
+    ("O", "Ellipse"),
+    ("T", "Text"),
+    ("Q", "Laser pointer"),
+    ("V", "Select object"),
+];
+const HELP_ACTIONS: &[(&str, &str)] = &[
+    ("Delete", "Delete selection"),
+    ("Ctrl + Z", "Undo"),
+    ("Ctrl + Shift + Z", "Redo"),
+    ("Tab", "Desktop mode"),
+    ("Mouse wheel", "Change stroke width"),
+    ("Shift + Enter", "New text line"),
+    ("Enter", "Commit text"),
+    ("Escape", "Cancel or exit"),
+    ("F1", "Close this help"),
+];
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Action {
     Tool(Tool),
@@ -229,6 +255,155 @@ fn paint(color: [u8; 4]) -> Paint<'static> {
     let mut p = Paint::default();
     p.set_color_rgba8(color[0], color[1], color[2], color[3]);
     p
+}
+
+pub fn draw_help_background(pix: &mut Pixmap, width: f32, height: f32, scale: f32) {
+    let panel_width = HELP_WIDTH.min(width - 32.0).max(280.0);
+    let panel_height = HELP_HEIGHT.min(height - 32.0).max(280.0);
+    let x = (width - panel_width) / 2.0;
+    let y = (height - panel_height) / 2.0;
+    let transform = Transform::from_scale(scale, scale);
+
+    if let Some(rect) = tiny_skia::Rect::from_xywh(0.0, 0.0, width, height) {
+        pix.fill_rect(rect, &paint([0, 0, 0, 125]), transform, None);
+    }
+    if let Some(path) = rounded(x, y, panel_width, panel_height, 18.0) {
+        pix.fill_path(
+            &path,
+            &paint([6, 14, 18, 248]),
+            FillRule::Winding,
+            transform,
+            None,
+        );
+        pix.stroke_path(
+            &path,
+            &paint([88, 145, 158, 255]),
+            &Stroke {
+                width: 1.5,
+                ..Stroke::default()
+            },
+            transform,
+            None,
+        );
+    }
+
+    let card_y = y + 82.0;
+    let card_height = panel_height - 134.0;
+    let gap = 14.0;
+    let card_width = (panel_width - 56.0 - gap) / 2.0;
+    for card_x in [x + 28.0, x + 28.0 + card_width + gap] {
+        if let Some(path) = rounded(card_x, card_y, card_width, card_height, 12.0) {
+            pix.fill_path(
+                &path,
+                &paint([12, 26, 32, 245]),
+                FillRule::Winding,
+                transform,
+                None,
+            );
+            pix.stroke_path(
+                &path,
+                &paint([36, 67, 78, 255]),
+                &Stroke {
+                    width: 1.0,
+                    ..Stroke::default()
+                },
+                transform,
+                None,
+            );
+        }
+    }
+
+    for (column, items) in [HELP_TOOLS, HELP_ACTIONS].into_iter().enumerate() {
+        let card_x = x + 28.0 + column as f32 * (card_width + gap);
+        for row in 0..items.len() {
+            let key_x = card_x + 16.0;
+            let key_y = card_y + 48.0 + row as f32 * HELP_ROW_HEIGHT;
+            let key_width = if column == 0 { 72.0 } else { 130.0 };
+            if let Some(path) = rounded(key_x, key_y, key_width, 25.0, 6.0) {
+                pix.fill_path(
+                    &path,
+                    &paint([25, 48, 57, 255]),
+                    FillRule::Winding,
+                    transform,
+                    None,
+                );
+                pix.stroke_path(
+                    &path,
+                    &paint([77, 122, 132, 255]),
+                    &Stroke {
+                        width: 1.0,
+                        ..Stroke::default()
+                    },
+                    transform,
+                    None,
+                );
+            }
+        }
+    }
+}
+
+pub fn help_text(width: f32, height: f32) -> Vec<Annotation> {
+    let panel_width = HELP_WIDTH.min(width - 32.0).max(280.0);
+    let panel_height = HELP_HEIGHT.min(height - 32.0).max(280.0);
+    let panel_x = (width - panel_width) / 2.0;
+    let panel_y = (height - panel_height) / 2.0;
+    let card_width = (panel_width - 70.0) / 2.0;
+    let annotation = |x, y, text: &str, font_size, color| Annotation {
+        tool: Tool::Text,
+        points: vec![Point::new(x, y)],
+        color,
+        width: 1.0,
+        filled: false,
+        text: text.into(),
+        font_size,
+    };
+    let mut text = vec![
+        annotation(
+            panel_x + 28.0,
+            panel_y + 24.0,
+            "Keyboard Shortcuts",
+            27.0,
+            [158, 234, 190, 255],
+        ),
+        annotation(
+            panel_x + 30.0,
+            panel_y + panel_height - 34.0,
+            "Press F1 or Escape to close",
+            15.0,
+            [126, 157, 166, 255],
+        ),
+    ];
+    for (column, (title, items)) in [("DRAWING TOOLS", HELP_TOOLS), ("ACTIONS", HELP_ACTIONS)]
+        .into_iter()
+        .enumerate()
+    {
+        let card_x = panel_x + 28.0 + column as f32 * (card_width + 14.0);
+        text.push(annotation(
+            card_x + 16.0,
+            panel_y + 98.0,
+            title,
+            14.0,
+            [126, 181, 192, 255],
+        ));
+        for (row, (key, label)) in items.iter().enumerate() {
+            let row_y = panel_y + 137.0 + row as f32 * HELP_ROW_HEIGHT;
+            text.push(annotation(
+                card_x + 24.0,
+                row_y,
+                key,
+                14.0,
+                [226, 246, 239, 255],
+            ));
+            text.push(annotation(
+                card_x + if column == 0 { 102.0 } else { 160.0 },
+                row_y,
+                label,
+                15.0,
+                [210, 221, 224, 255],
+            ));
+        }
+    }
+    text
 }
 fn lines(
     pix: &mut Pixmap,

@@ -356,6 +356,7 @@ impl State {
                 }
                 self.app.drawing = !self.app.drawing;
                 self.app.color_picker = false;
+                self.app.help_visible = false;
                 self.drag_origin = None;
                 self.modifiers = Modifiers::default();
             }
@@ -373,6 +374,19 @@ impl State {
         let Some(index) = self.focused.filter(|i| *i < self.views.len()) else {
             return;
         };
+        if event.keysym == Keysym::F1 {
+            self.app.help_visible = !self.app.help_visible;
+            self.app.color_picker = false;
+            self.dirty_all();
+            return;
+        }
+        if self.app.help_visible {
+            if event.keysym == Keysym::Escape {
+                self.app.help_visible = false;
+                self.dirty_all();
+            }
+            return;
+        }
         if self.views[index]
             .session
             .draft
