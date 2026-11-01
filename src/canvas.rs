@@ -321,23 +321,23 @@ impl Renderer {
         let caret_geometry = if caret {
             let last_run = buffer.layout_runs().last();
             let fallback_height = annotation.font_size * scale * 1.4;
-            let trailing_newlines = annotation
+            let newlines = annotation
                 .text
                 .chars()
-                .rev()
-                .take_while(|character| *character == '\n')
+                .filter(|character| *character == '\n')
                 .count();
-            let (x, y, height) = if trailing_newlines > 0 {
+            let trailing_newlines = annotation.text.ends_with('\n');
+            let (x, y, height) = if trailing_newlines {
                 last_run.map_or(
-                    (
-                        0.0,
-                        fallback_height * trailing_newlines as f32,
-                        fallback_height,
-                    ),
+                    (0.0, fallback_height * newlines as f32, fallback_height),
                     |run| {
+                        // `last_run` may already represent an empty line created
+                        // by the trailing newlines, so only advance the remaining
+                        // lines instead of adding every trailing newline again.
+                        let remaining_lines = newlines.saturating_sub(run.line_i);
                         (
                             0.0,
-                            run.line_top + run.line_height * trailing_newlines as f32,
+                            run.line_top + run.line_height * remaining_lines as f32,
                             run.line_height,
                         )
                     },
@@ -557,6 +557,38 @@ mod tests {
             0,
             "caret should start at the left edge of the second line"
         );
+    }
+
+    #[test]
+    fn consecutive_trailing_newlines_keep_caret_on_the_last_line() {
+        for newlines in 1..=4 {
+            let annotation = Annotation {
+                tool: Tool::Text,
+                points: vec![Point::new(4., 4.)],
+                color: [255, 255, 255, 255],
+                width: 2.,
+                filled: false,
+                text: format!("abc{}", "\n".repeat(newlines)),
+                font_size: 20.,
+            };
+            let mut pixmap = Pixmap::new(100, 200).unwrap();
+            Renderer::new().draw_editing(&mut pixmap, &annotation, 1.);
+
+            // The caret belongs on the line directly after the last newline.
+            let caret_y = 4 + newlines as u32 * 28;
+            assert_ne!(
+                pixmap.pixel(4, caret_y).unwrap().alpha(),
+                0,
+                "caret missing for {newlines} trailing newline(s)"
+            );
+            if newlines > 1 {
+                assert_eq!(
+                    pixmap.pixel(4, 4 + 28).unwrap().alpha(),
+                    0,
+                    "first empty line must stay empty for {newlines} newlines"
+                );
+            }
+        }
     }
 
     #[test]
