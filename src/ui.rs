@@ -6,6 +6,13 @@ use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
 pub const WIDTH: f32 = 682.0;
 pub const HEIGHT: f32 = 88.0;
+pub const PICKER_X: f32 = 19.0;
+pub const PICKER_Y: f32 = 94.0;
+pub const PICKER_COLS: usize = 24;
+pub const PICKER_ROWS: usize = 6;
+pub const PICKER_CELL: f32 = 14.0;
+pub const PICKER_WIDTH: f32 = PICKER_COLS as f32 * PICKER_CELL;
+pub const PICKER_HEIGHT: f32 = PICKER_Y + PICKER_ROWS as f32 * PICKER_CELL;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Action {
     Tool(Tool),
@@ -455,17 +462,20 @@ pub fn draw(pix: &mut Pixmap, app: &App, x: f32, y: f32, scale: f32) {
         }
     }
     if app.color_picker {
-        for row in 0..6 {
-            for col in 0..24 {
+        for row in 0..PICKER_ROWS {
+            for col in 0..PICKER_COLS {
                 if let Some(r) = tiny_skia::Rect::from_xywh(
-                    19. + col as f32 * 10.,
-                    94. + row as f32 * 10.,
-                    10.,
-                    10.,
+                    PICKER_X + col as f32 * PICKER_CELL,
+                    PICKER_Y + row as f32 * PICKER_CELL,
+                    PICKER_CELL,
+                    PICKER_CELL,
                 ) {
                     pix.fill_rect(
                         r,
-                        &paint(hsv(col as f32 / 24., (row + 1) as f32 / 6.)),
+                        &paint(hsv(
+                            col as f32 / PICKER_COLS as f32,
+                            (row + 1) as f32 / PICKER_ROWS as f32,
+                        )),
                         t,
                         None,
                     );
@@ -474,6 +484,20 @@ pub fn draw(pix: &mut Pixmap, app: &App, x: f32, y: f32, scale: f32) {
         }
     }
 }
+
+pub fn picker_color(x: f32, y: f32) -> Option<[u8; 4]> {
+    if !(PICKER_X..PICKER_X + PICKER_WIDTH).contains(&x) || !(PICKER_Y..PICKER_HEIGHT).contains(&y)
+    {
+        return None;
+    }
+    let col = ((x - PICKER_X) / PICKER_CELL).floor() as usize;
+    let row = ((y - PICKER_Y) / PICKER_CELL).floor() as usize;
+    Some(hsv(
+        col as f32 / PICKER_COLS as f32,
+        (row + 1) as f32 / PICKER_ROWS as f32,
+    ))
+}
+
 pub fn hsv(h: f32, s: f32) -> [u8; 4] {
     let h = h * 6.;
     let f = h - h.floor();
@@ -508,5 +532,24 @@ mod tests {
             .expect("exit button");
         assert_eq!((desktop.w, desktop.h), (exit.w, exit.h));
         assert!(exit.x + exit.w <= WIDTH);
+    }
+
+    #[test]
+    fn picker_geometry_stays_inside_toolbar_width() {
+        assert!(PICKER_X + PICKER_WIDTH <= WIDTH);
+        assert!(PICKER_HEIGHT > HEIGHT);
+        assert_eq!(PICKER_WIDTH, 336.);
+    }
+
+    #[test]
+    fn picker_color_maps_cells_to_distinct_colors() {
+        let top_left = picker_color(PICKER_X + 1., PICKER_Y + 1.).unwrap();
+        let next_column = picker_color(PICKER_X + PICKER_CELL + 1., PICKER_Y + 1.).unwrap();
+        let next_row = picker_color(PICKER_X + 1., PICKER_Y + PICKER_CELL + 1.).unwrap();
+        assert_ne!(top_left, next_column);
+        assert_ne!(top_left, next_row);
+        assert!(picker_color(PICKER_X - 1., PICKER_Y + 1.).is_none());
+        assert!(picker_color(PICKER_X + PICKER_WIDTH, PICKER_Y + 1.).is_none());
+        assert!(picker_color(PICKER_X + 1., PICKER_HEIGHT).is_none());
     }
 }

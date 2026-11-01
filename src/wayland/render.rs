@@ -11,7 +11,7 @@ impl State {
                 0.,
                 (v.height as f32
                     - if self.app.color_picker {
-                        154.
+                        ui::PICKER_HEIGHT
                     } else {
                         ui::HEIGHT
                     } * scale)
@@ -157,10 +157,10 @@ impl State {
             );
             if self.app.color_picker {
                 region.add(
-                    (x + 19. * scale).floor() as i32,
-                    (y + 94. * scale).floor() as i32,
-                    (240. * scale).ceil() as i32,
-                    (60. * scale).ceil() as i32,
+                    (x + ui::PICKER_X * scale).floor() as i32,
+                    (y + ui::PICKER_Y * scale).floor() as i32,
+                    (ui::PICKER_WIDTH * scale).ceil() as i32,
+                    ((ui::PICKER_HEIGHT - ui::PICKER_Y) * scale).ceil() as i32,
                 );
             }
             view.layer

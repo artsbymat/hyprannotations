@@ -169,13 +169,9 @@ impl PointerHandler for State {
                 Press { button: 0x110, .. } => {
                     self.focused = Some(index);
                     if self.app.color_picker
-                        && (19.0..259.0).contains(&ux)
-                        && (94.0..154.0).contains(&uy)
+                        && let Some(color) = ui::picker_color(ux, uy)
                     {
-                        self.app.replace_color(ui::hsv(
-                            ((ux - 19.) / 10.).floor() / 24.,
-                            (((uy - 94.) / 10.).floor() + 1.) / 6.,
-                        ));
+                        self.app.replace_color(color);
                         self.app.save_palette();
                         self.app.color_picker = false;
                         self.dirty_all();
