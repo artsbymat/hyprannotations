@@ -5,6 +5,22 @@ use tiny_skia::{
     Color, FillRule, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, Stroke, Transform,
 };
 
+fn rounded_rect(x: f32, y: f32, w: f32, h: f32, radius: f32) -> Option<Path> {
+    let radius = radius.min(w / 2.).min(h / 2.);
+    let mut p = PathBuilder::new();
+    p.move_to(x + radius, y);
+    p.line_to(x + w - radius, y);
+    p.quad_to(x + w, y, x + w, y + radius);
+    p.line_to(x + w, y + h - radius);
+    p.quad_to(x + w, y + h, x + w - radius, y + h);
+    p.line_to(x + radius, y + h);
+    p.quad_to(x, y + h, x, y + h - radius);
+    p.line_to(x, y + radius);
+    p.quad_to(x, y, x + radius, y);
+    p.close();
+    p.finish()
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tool {
@@ -44,6 +60,18 @@ pub struct Annotation {
     pub font_size: f32,
 }
 impl Annotation {
+    /// Black or white foreground that stays legible on top of this annotation's
+    /// fill color. Only used for text backgrounds.
+    pub fn contrasting_text_color(&self) -> [u8; 4] {
+        let [r, g, b, _] = self.color;
+        let luminance = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
+        if luminance > 150. {
+            [0, 0, 0, 255]
+        } else {
+            [255, 255, 255, 255]
+        }
+    }
+
     pub fn path(&self) -> Option<Path> {
         let first = *self.points.first()?;
         let last = *self.points.last()?;
@@ -105,13 +133,32 @@ impl Annotation {
                 .unwrap_or(0);
             let width = (max_chars as f32 * self.font_size * 0.75).max(self.font_size * 0.5);
             let height = (lines.len().max(1) as f32 * line_height).max(line_height);
-            tiny_skia::Rect::from_xywh(p.x, p.y, width, height)
+            if self.filled {
+                let padding = (self.font_size * 0.2).max(3.);
+                tiny_skia::Rect::from_xywh(
+                    p.x - padding,
+                    p.y - padding,
+                    width + padding * 2.,
+                    height + padding * 2.,
+                )
+            } else {
+                tiny_skia::Rect::from_xywh(p.x, p.y, width, height)
+            }
         } else {
             self.path().map(|p| p.bounds())
         }
     }
     pub fn hit(&self, point: Point, radius: f32) -> bool {
         if self.tool == Tool::Text {
+            if self.filled
+                && let Some(bounds) = self.bounds()
+                && point.x >= bounds.left() - radius
+                && point.x <= bounds.right() + radius
+                && point.y >= bounds.top() - radius
+                && point.y <= bounds.bottom() + radius
+            {
+                return true;
+            }
             let Some(p) = self.points.first() else {
                 return false;
             };
@@ -317,41 +364,77 @@ impl Renderer {
             Shaping::Advanced,
         );
         buffer.shape_until_scroll(&mut self.fonts, false);
-        let c = annotation.color;
-        let caret_geometry = if caret {
-            let last_run = buffer.layout_runs().last();
-            let fallback_height = annotation.font_size * scale * 1.4;
-            let newlines = annotation
-                .text
-                .chars()
-                .filter(|character| *character == '\n')
-                .count();
-            let trailing_newlines = annotation.text.ends_with('\n');
-            let (x, y, height) = if trailing_newlines {
-                last_run.map_or(
-                    (0.0, fallback_height * newlines as f32, fallback_height),
-                    |run| {
-                        // `last_run` may already represent an empty line created
-                        // by the trailing newlines, so only advance the remaining
-                        // lines instead of adding every trailing newline again.
-                        let remaining_lines = newlines.saturating_sub(run.line_i);
-                        (
-                            0.0,
-                            run.line_top + run.line_height * remaining_lines as f32,
-                            run.line_height,
-                        )
-                    },
-                )
-            } else {
-                last_run.map_or((0.0, 0.0, fallback_height), |run| {
+        let c = if annotation.filled {
+            annotation.contrasting_text_color()
+        } else {
+            annotation.color
+        };
+        let last_run = buffer.layout_runs().last();
+        let fallback_height = annotation.font_size * scale * 1.4;
+        let newlines = annotation
+            .text
+            .chars()
+            .filter(|character| *character == '\n')
+            .count();
+        let trailing_newlines = annotation.text.ends_with('\n');
+        let (caret_x, caret_y, caret_height) = if trailing_newlines {
+            last_run.map_or(
+                (0.0, fallback_height * newlines as f32, fallback_height),
+                |run| {
+                    // `last_run` may already represent an empty line created
+                    // by the trailing newlines, so only advance the remaining
+                    // lines instead of adding every trailing newline again.
+                    let remaining_lines = newlines.saturating_sub(run.line_i);
                     (
-                        if run.rtl { 0.0 } else { run.line_w },
-                        run.line_top,
+                        0.0,
+                        run.line_top + run.line_height * remaining_lines as f32,
                         run.line_height,
                     )
-                })
-            };
-            Some((x, y, height))
+                },
+            )
+        } else {
+            last_run.map_or((0.0, 0.0, fallback_height), |run| {
+                (
+                    if run.rtl { 0.0 } else { run.line_w },
+                    run.line_top,
+                    run.line_height,
+                )
+            })
+        };
+        if annotation.filled {
+            let padding = (annotation.font_size * scale * 0.2).max(3.);
+            let mut text_width: f32 = 0.;
+            let mut text_height: f32 = 0.;
+            for run in buffer.layout_runs() {
+                text_width = text_width.max(run.line_w);
+                text_height = text_height.max(run.line_top + run.line_height);
+            }
+            // The caret can be on an empty line that has no layout run yet.
+            text_height = text_height.max(caret_y + caret_height);
+            let min_width = annotation.font_size * scale * 0.6;
+            let x = origin.x * scale - padding;
+            let y = origin.y * scale - padding;
+            let width = text_width.max(min_width) + padding * 2.;
+            let height = text_height.max(fallback_height) + padding * 2.;
+            if let Some(path) = rounded_rect(x, y, width, height, padding) {
+                let mut background = Paint::default();
+                background.set_color_rgba8(
+                    annotation.color[0],
+                    annotation.color[1],
+                    annotation.color[2],
+                    annotation.color[3],
+                );
+                pix.fill_path(
+                    &path,
+                    &background,
+                    FillRule::Winding,
+                    Transform::identity(),
+                    None,
+                );
+            }
+        }
+        let caret_geometry = if caret {
+            Some((caret_x, caret_y, caret_height))
         } else {
             None
         };
@@ -592,6 +675,91 @@ mod tests {
     }
 
     #[test]
+    fn text_background_uses_contrasting_foreground() {
+        let mut annotation = Annotation {
+            tool: Tool::Text,
+            points: vec![Point::new(10., 10.)],
+            color: [255, 255, 255, 255],
+            width: 2.,
+            filled: true,
+            text: "hello".into(),
+            font_size: 20.,
+        };
+        assert_eq!(annotation.contrasting_text_color(), [0, 0, 0, 255]);
+        annotation.color = [0, 0, 0, 255];
+        assert_eq!(annotation.contrasting_text_color(), [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn filled_text_draws_a_background_and_keeps_text_readable() {
+        let annotation = Annotation {
+            tool: Tool::Text,
+            points: vec![Point::new(20., 20.)],
+            color: [255, 255, 0, 255],
+            width: 2.,
+            filled: true,
+            text: "hello".into(),
+            font_size: 20.,
+        };
+        let mut pixmap = Pixmap::new(160, 100).unwrap();
+        Renderer::new().draw(&mut pixmap, &annotation, 1.);
+
+        // Background padding is painted even before the glyphs begin.
+        assert!(pixmap.pixel(17, 22).unwrap().alpha() != 0);
+        // Dark text sits on the bright yellow background.
+        let dark_pixels = (20..120)
+            .flat_map(|x| (10..70).map(move |y| (x, y)))
+            .filter(|(x, y)| {
+                pixmap.pixel(*x, *y).is_some_and(|p| {
+                    p.alpha() != 0 && p.red() < 80 && p.green() < 80 && p.blue() < 80
+                })
+            })
+            .count();
+        assert!(dark_pixels > 0);
+    }
+
+    #[test]
+    fn filled_text_background_has_padding_and_rounded_corners() {
+        let annotation = Annotation {
+            tool: Tool::Text,
+            points: vec![Point::new(30., 30.)],
+            color: [255, 255, 0, 255],
+            width: 2.,
+            filled: true,
+            text: "hi".into(),
+            font_size: 20.,
+        };
+        let mut pixmap = Pixmap::new(140, 100).unwrap();
+        Renderer::new().draw(&mut pixmap, &annotation, 1.);
+
+        // Padding extends outside the text origin.
+        assert_ne!(pixmap.pixel(27, 32).unwrap().alpha(), 0);
+        // The rounded corner is transparent while the padding edge is filled.
+        assert_eq!(pixmap.pixel(26, 26).unwrap().alpha(), 0);
+        assert_ne!(pixmap.pixel(31, 27).unwrap().alpha(), 0);
+    }
+
+    #[test]
+    fn filled_text_background_covers_the_empty_line_after_shift_enter() {
+        let annotation = Annotation {
+            tool: Tool::Text,
+            points: vec![Point::new(30., 30.)],
+            color: [255, 255, 0, 255],
+            width: 2.,
+            filled: true,
+            text: "hi\n".into(),
+            font_size: 20.,
+        };
+        let mut pixmap = Pixmap::new(140, 140).unwrap();
+        Renderer::new().draw_editing(&mut pixmap, &annotation, 1.);
+
+        // The second (empty) line is inside the background and shows the caret.
+        assert_ne!(pixmap.pixel(30, 30 + 28 + 4).unwrap().alpha(), 0);
+        // Background padding reaches below that empty line.
+        assert_ne!(pixmap.pixel(30, 30 + 2 * 28 + 2).unwrap().alpha(), 0);
+    }
+
+    #[test]
     fn multiline_text_bounds_covers_all_lines() {
         let annotation = Annotation {
             tool: Tool::Text,
@@ -628,5 +796,24 @@ mod tests {
         assert!(!annotation.hit(Point::new(20., 90.), 5.));
         // Above line 1: y = 5. Should NOT hit.
         assert!(!annotation.hit(Point::new(20., 5.), 5.));
+    }
+
+    #[test]
+    fn filled_text_hit_testing_covers_entire_background() {
+        let annotation = Annotation {
+            tool: Tool::Text,
+            points: vec![Point::new(10., 20.)],
+            color: [255, 255, 255, 255],
+            width: 2.,
+            filled: true,
+            text: "Baris 1\nBaris 2 panjang".into(),
+            font_size: 20.,
+        };
+        let bounds = annotation.bounds().unwrap();
+        // Point in the padding / blank area of the first short line
+        assert!(annotation.hit(Point::new(bounds.left() + 5., bounds.top() + 5.), 1.));
+        assert!(annotation.hit(Point::new(bounds.right() - 5., bounds.top() + 10.), 1.));
+        // Outside the bounding box
+        assert!(!annotation.hit(Point::new(bounds.right() + 10., bounds.top() + 10.), 1.));
     }
 }

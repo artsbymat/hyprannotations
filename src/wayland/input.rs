@@ -308,7 +308,10 @@ impl State {
         if !ui::enabled(action, &self.app) {
             return;
         }
-        self.commit_text(index);
+        // Toggling the text background must not end the active text edit.
+        if !matches!(action, Action::Fill) {
+            self.commit_text(index);
+        }
         if matches!(action, Action::Undo | Action::Redo | Action::Clear) {
             self.views[index].session.selected = None;
         }
@@ -329,7 +332,15 @@ impl State {
                     self.app.width + 2.
                 }
             }
-            Action::Fill => self.app.toggle_fill(),
+            Action::Fill => {
+                self.app.toggle_fill();
+                if let Some(draft) = &mut self.views[index].session.draft
+                    && draft.tool == Tool::Text
+                {
+                    draft.filled = self.app.filled;
+                    draft.color = self.app.color;
+                }
+            }
             Action::Undo => self.views[index].session.document.undo(),
             Action::Redo => self.views[index].session.document.redo(),
             Action::Clear => self.views[index].session.document.clear(),

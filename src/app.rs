@@ -16,7 +16,7 @@ pub struct App {
 }
 impl App {
     pub fn supports_fill(&self) -> bool {
-        self.drawing && matches!(self.tool, Tool::Rectangle | Tool::Ellipse)
+        self.drawing && matches!(self.tool, Tool::Rectangle | Tool::Ellipse | Tool::Text)
     }
 
     pub fn toggle_fill(&mut self) {
@@ -112,7 +112,7 @@ mod tests {
     }
 
     #[test]
-    fn fill_only_toggles_for_rectangle_and_ellipse() {
+    fn fill_toggles_for_shape_and_text_tools() {
         let mut app = App::new(Settings::default());
         app.tool = Tool::Pen;
         app.toggle_fill();
@@ -124,11 +124,10 @@ mod tests {
 
         app.tool = Tool::Text;
         app.toggle_fill();
-        assert!(
-            app.filled,
-            "disabled Fill must not change its saved shape state"
-        );
-        assert!(!app.annotation(Point::new(0., 0.)).filled);
+        assert!(!app.filled);
+        app.toggle_fill();
+        assert!(app.filled);
+        assert!(app.annotation(Point::new(0., 0.)).filled);
 
         app.tool = Tool::Ellipse;
         app.toggle_fill();
