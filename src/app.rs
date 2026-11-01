@@ -12,6 +12,7 @@ pub struct App {
     pub drawing: bool,
     pub palette: crate::config::palette::Palette,
     pub exit: bool,
+    exit_armed_until: Option<std::time::Instant>,
     pub color_picker: bool,
     pub help_visible: bool,
     pub auto_number: bool,
@@ -37,9 +38,29 @@ impl App {
             drawing: true,
             palette: crate::config::palette::Palette::default(),
             exit: false,
+            exit_armed_until: None,
             color_picker: false,
             help_visible: false,
             auto_number: false,
+        }
+    }
+
+    pub fn request_exit(&mut self) -> bool {
+        self.request_exit_at(std::time::Instant::now())
+    }
+
+    pub fn cancel_exit_request(&mut self) {
+        self.exit_armed_until = None;
+    }
+
+    fn request_exit_at(&mut self, now: std::time::Instant) -> bool {
+        if self.exit_armed_until.is_some_and(|until| now <= until) {
+            self.exit = true;
+            self.exit_armed_until = None;
+            true
+        } else {
+            self.exit_armed_until = Some(now + std::time::Duration::from_secs(2));
+            false
         }
     }
     pub fn load_palette(&mut self) {
@@ -138,5 +159,24 @@ mod tests {
         app.tool = Tool::Ellipse;
         app.toggle_fill();
         assert!(!app.filled);
+    }
+
+    #[test]
+    fn exit_requires_two_requests_within_confirmation_window() {
+        let mut app = App::new(Settings::default());
+        let started = std::time::Instant::now();
+        assert!(!app.request_exit_at(started));
+        assert!(!app.exit);
+        assert!(app.request_exit_at(started + std::time::Duration::from_secs(1)));
+        assert!(app.exit);
+
+        let mut app = App::new(Settings::default());
+        assert!(!app.request_exit_at(started));
+        assert!(!app.request_exit_at(started + std::time::Duration::from_secs(3)));
+        assert!(!app.exit);
+
+        app.cancel_exit_request();
+        assert!(!app.request_exit_at(started + std::time::Duration::from_secs(4)));
+        assert!(!app.exit);
     }
 }

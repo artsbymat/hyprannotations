@@ -9,6 +9,30 @@ pub const POINTER_TRAIL_LIFETIME: Duration = Duration::from_millis(900);
 const RESIZE_HANDLE_RADIUS: f32 = 9.0;
 const MIN_RESIZE_SIZE: f32 = 8.0;
 
+fn crop_preview(before: &Annotation, current: tiny_skia::Rect) -> Option<tiny_skia::Pixmap> {
+    let original = before.bounds()?;
+    let source = before.image.as_ref()?;
+    let x = (((current.left() - original.left()) / original.width()) * source.width() as f32)
+        .round()
+        .clamp(0.0, source.width().saturating_sub(1) as f32) as u32;
+    let y = (((current.top() - original.top()) / original.height()) * source.height() as f32)
+        .round()
+        .clamp(0.0, source.height().saturating_sub(1) as f32) as u32;
+    let width = ((current.width() / original.width()) * source.width() as f32)
+        .round()
+        .max(1.0) as u32;
+    let height = ((current.height() / original.height()) * source.height() as f32)
+        .round()
+        .max(1.0) as u32;
+    let rect = tiny_skia::IntRect::from_xywh(
+        x as i32,
+        y as i32,
+        width.min(source.width() - x),
+        height.min(source.height() - y),
+    )?;
+    source.clone_rect(rect)
+}
+
 #[derive(Clone, Copy, Debug)]
 enum ResizeCorner {
     TopLeft,
@@ -20,9 +44,11 @@ enum ResizeCorner {
 struct ResizeGesture {
     index: usize,
     corner: ResizeCorner,
-    before: Vec<Point>,
+    before: Annotation,
     original_width: f32,
     original_height: f32,
+    crop: bool,
+    last_crop_preview: Instant,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -44,14 +70,74 @@ pub struct Session {
     pub document: Document,
     pub draft: Option<Annotation>,
     pub selected: Option<usize>,
+    selected_extra: std::collections::BTreeSet<usize>,
     pub pointer_trail: VecDeque<PointerTrailPoint>,
     pointer_stroke: u64,
     erase_points: Vec<Point>,
     move_origin: Option<Point>,
     move_last: Option<Point>,
     resize: Option<ResizeGesture>,
+    pub crop_mode: bool,
 }
 impl Session {
+    pub fn selected_indices(&self) -> Vec<usize> {
+        let mut indices: std::collections::BTreeSet<_> = self.selected_extra.clone();
+        if let Some(selected) = self.selected {
+            indices.insert(selected);
+        }
+        indices.into_iter().collect()
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selected = None;
+        self.selected_extra.clear();
+        self.crop_mode = false;
+    }
+
+    pub fn set_selection(&mut self, indices: Vec<usize>) {
+        self.clear_selection();
+        let mut indices = indices.into_iter();
+        self.selected = indices.next_back();
+        self.selected_extra.extend(indices);
+    }
+
+    pub fn delete_selected(&mut self) {
+        let indices = self.selected_indices();
+        self.document.delete_many(&indices);
+        self.clear_selection();
+    }
+
+    pub fn duplicate_selected(&mut self) {
+        let indices = self.selected_indices();
+        let copies = self.document.duplicate(&indices);
+        self.set_selection(copies);
+    }
+
+    pub fn reorder_selected(&mut self, forward: bool) {
+        let indices = self.selected_indices();
+        let reordered = self.document.reorder(&indices, forward);
+        self.set_selection(reordered);
+    }
+
+    pub fn rotate_selected_images(&mut self) {
+        let indices = self.selected_indices();
+        self.document.rotate_images(&indices);
+    }
+
+    pub fn toggle_crop_mode(&mut self) -> Option<bool> {
+        let is_image = self
+            .selected
+            .and_then(|index| self.document.objects.get(index))
+            .is_some_and(|annotation| annotation.tool == Tool::Image);
+        if is_image {
+            self.crop_mode = !self.crop_mode;
+            Some(self.crop_mode)
+        } else {
+            self.crop_mode = false;
+            None
+        }
+    }
+
     fn resize_handle_at(&self, point: Point) -> Option<(usize, ResizeCorner)> {
         let index = self.selected?;
         let annotation = self.document.objects.get(index)?;
@@ -89,28 +175,55 @@ impl Session {
         self.resize_handle_at(point).is_some()
     }
 
+    #[cfg(test)]
     pub fn begin(&mut self, app: &App, p: Point) {
+        self.begin_additive(app, p, false);
+    }
+
+    pub fn begin_additive(&mut self, app: &App, p: Point, additive: bool) {
         match app.tool {
             Tool::Eraser => self.erase_points.push(p),
             Tool::Select => {
-                if let Some((index, corner)) = self.resize_handle_at(p) {
+                if !additive && let Some((index, corner)) = self.resize_handle_at(p) {
                     let annotation = &self.document.objects[index];
                     let bounds = annotation.bounds().expect("resizable object has bounds");
                     self.resize = Some(ResizeGesture {
                         index,
                         corner,
-                        before: annotation.points.clone(),
+                        before: annotation.clone(),
                         original_width: bounds.width(),
                         original_height: bounds.height(),
+                        crop: self.crop_mode && annotation.tool == Tool::Image,
+                        last_crop_preview: Instant::now() - Duration::from_millis(16),
                     });
                     self.move_origin = None;
                     self.move_last = None;
                     return;
                 }
-                let v = &mut *self;
-                v.selected = v.document.objects.iter().rposition(|a| a.hit(p, 5.));
-                v.move_origin = Some(p);
-                v.move_last = Some(p);
+                let hit = self.document.objects.iter().rposition(|a| a.hit(p, 5.));
+                if additive {
+                    if let Some(hit) = hit {
+                        if self.selected == Some(hit) {
+                            self.selected = self.selected_extra.pop_last();
+                        } else if !self.selected_extra.remove(&hit)
+                            && let Some(previous) = self.selected.replace(hit)
+                        {
+                            self.selected_extra.insert(previous);
+                        }
+                    }
+                    self.move_origin = None;
+                    self.move_last = None;
+                } else {
+                    let already_selected = hit.is_some_and(|index| {
+                        self.selected == Some(index) || self.selected_extra.contains(&index)
+                    });
+                    if !already_selected {
+                        self.clear_selection();
+                        self.selected = hit;
+                    }
+                    self.move_origin = hit.map(|_| p);
+                    self.move_last = hit.map(|_| p);
+                }
             }
             Tool::Pointer => {
                 self.pointer_stroke = self.pointer_stroke.wrapping_add(1);
@@ -119,7 +232,12 @@ impl Session {
             _ => self.draft = Some(app.annotation(p)),
         }
     }
+    #[cfg(test)]
     pub fn motion(&mut self, app: &App, p: Point) {
+        self.motion_free(app, p, false);
+    }
+
+    pub fn motion_free(&mut self, app: &App, p: Point, free_image_resize: bool) {
         let v = &mut *self;
         if app.tool == Tool::Pointer {
             let now = Instant::now();
@@ -136,11 +254,11 @@ impl Session {
                 );
             }
         } else if app.tool == Tool::Select {
-            if let Some(resize) = &v.resize {
+            if let Some(resize) = &mut v.resize {
                 let Some(annotation) = v.document.objects.get_mut(resize.index) else {
                     return;
                 };
-                let Some(original) = annotation.bounds() else {
+                let Some(original) = resize.before.bounds() else {
                     return;
                 };
                 let (opposite, sign_x, sign_y) = match resize.corner {
@@ -157,7 +275,13 @@ impl Session {
                         (Point::new(original.left(), original.top()), 1.0, 1.0)
                     }
                 };
-                let (width, height) = if annotation.tool == Tool::Image {
+                let (width, height) = if resize.crop {
+                    let width =
+                        ((p.x - opposite.x) * sign_x).clamp(MIN_RESIZE_SIZE, original.width());
+                    let height =
+                        ((p.y - opposite.y) * sign_y).clamp(MIN_RESIZE_SIZE, original.height());
+                    (width, height)
+                } else if annotation.tool == Tool::Image && !free_image_resize {
                     let base_x = sign_x * resize.original_width;
                     let base_y = sign_y * resize.original_height;
                     let projected = ((p.x - opposite.x) * base_x + (p.y - opposite.y) * base_y)
@@ -180,9 +304,19 @@ impl Session {
                     Point::new(opposite.x.min(target.x), opposite.y.min(target.y)),
                     Point::new(opposite.x.max(target.x), opposite.y.max(target.y)),
                 ];
-            } else if let (Some(selected), Some(last)) = (v.selected, v.move_last) {
-                v.document
-                    .translate(selected, Point::new(p.x - last.x, p.y - last.y));
+                if resize.crop
+                    && resize.last_crop_preview.elapsed() >= Duration::from_millis(16)
+                    && let Some(bounds) = annotation.bounds()
+                    && let Some(cropped) = crop_preview(&resize.before, bounds)
+                {
+                    annotation.image = Some(std::sync::Arc::new(cropped));
+                    resize.last_crop_preview = Instant::now();
+                }
+            } else if let Some(last) = v.move_last {
+                let delta = Point::new(p.x - last.x, p.y - last.y);
+                for selected in v.selected_indices() {
+                    v.document.translate(selected, delta);
+                }
                 v.move_last = Some(p);
             }
         } else if app.tool == Tool::Eraser {
@@ -238,13 +372,19 @@ impl Session {
     pub fn finish(&mut self, app: &App) {
         let v = &mut *self;
         if let Some(resize) = v.resize.take() {
-            v.document.record_resize(resize.index, resize.before);
+            if resize.crop
+                && let Some(bounds) = v.document.objects[resize.index].bounds()
+                && let Some(cropped) = crop_preview(&resize.before, bounds)
+            {
+                v.document.objects[resize.index].image = Some(std::sync::Arc::new(cropped));
+            }
+            v.document.record_transform(resize.index, resize.before);
         }
-        if let (Some(selected), Some(origin), Some(last)) =
-            (v.selected, v.move_origin.take(), v.move_last.take())
-        {
-            v.document
-                .record_move(selected, Point::new(last.x - origin.x, last.y - origin.y));
+        if let (Some(origin), Some(last)) = (v.move_origin.take(), v.move_last.take()) {
+            v.document.record_moves(
+                v.selected_indices(),
+                Point::new(last.x - origin.x, last.y - origin.y),
+            );
         }
         if !v.erase_points.is_empty() {
             v.document.erase(&v.erase_points, app.width * 2.);
@@ -341,6 +481,101 @@ mod tests {
         session.document.undo();
         let bounds = session.document.objects[0].bounds().unwrap();
         assert_eq!((bounds.width(), bounds.height()), (100., 50.));
+    }
+
+    fn image_annotation(width: u32, height: u32, right: f32, bottom: f32) -> Annotation {
+        Annotation {
+            tool: Tool::Image,
+            points: vec![Point::new(0., 0.), Point::new(right, bottom)],
+            color: [255; 4],
+            width: 1.,
+            filled: false,
+            text: String::new(),
+            font_size: 12.,
+            image: Some(std::sync::Arc::new(
+                tiny_skia::Pixmap::new(width, height).unwrap(),
+            )),
+            number: None,
+        }
+    }
+
+    #[test]
+    fn shift_allows_free_image_resize() {
+        let mut app = App::new(Settings::default());
+        app.tool = Tool::Select;
+        let mut session = Session::default();
+        session.document.add(image_annotation(2, 1, 100., 50.));
+        session.selected = Some(0);
+        session.begin(&app, Point::new(100., 50.));
+        session.motion_free(&app, Point::new(120., 120.), true);
+        session.finish(&app);
+        let bounds = session.document.objects[0].bounds().unwrap();
+        assert_eq!((bounds.width(), bounds.height()), (120., 120.));
+    }
+
+    #[test]
+    fn crop_and_rotate_image_are_undoable() {
+        let mut app = App::new(Settings::default());
+        app.tool = Tool::Select;
+        let mut session = Session::default();
+        session.document.add(image_annotation(4, 4, 100., 100.));
+        session.selected = Some(0);
+        assert_eq!(session.toggle_crop_mode(), Some(true));
+        session.begin(&app, Point::new(100., 100.));
+        session.motion(&app, Point::new(50., 50.));
+        let preview = session.document.objects[0].image.as_ref().unwrap();
+        assert_eq!((preview.width(), preview.height()), (2, 2));
+        session.finish(&app);
+        let cropped = session.document.objects[0].image.as_ref().unwrap();
+        assert_eq!((cropped.width(), cropped.height()), (2, 2));
+        session.document.undo();
+        assert_eq!(
+            session.document.objects[0].image.as_ref().unwrap().width(),
+            4
+        );
+
+        session.document.objects[0] = image_annotation(4, 2, 100., 50.);
+        session.rotate_selected_images();
+        let bounds = session.document.objects[0].bounds().unwrap();
+        assert_eq!((bounds.width(), bounds.height()), (50., 100.));
+        let rotated = session.document.objects[0].image.as_ref().unwrap();
+        assert_eq!((rotated.width(), rotated.height()), (2, 4));
+        session.document.undo();
+        assert_eq!(
+            session.document.objects[0].image.as_ref().unwrap().width(),
+            4
+        );
+    }
+
+    #[test]
+    fn multi_selection_moves_and_duplicates_as_one_group() {
+        let mut app = App::new(Settings::default());
+        app.tool = Tool::Line;
+        let mut session = Session::default();
+        for y in [10., 40.] {
+            session.begin(&app, Point::new(10., y));
+            session.motion(&app, Point::new(50., y));
+            session.finish(&app);
+        }
+        app.tool = Tool::Select;
+        session.begin(&app, Point::new(30., 10.));
+        session.finish(&app);
+        session.begin_additive(&app, Point::new(30., 40.), true);
+        assert_eq!(session.selected_indices(), vec![0, 1]);
+        session.begin(&app, Point::new(30., 10.));
+        session.motion(&app, Point::new(40., 20.));
+        session.finish(&app);
+        assert_eq!(session.document.objects[0].points[0], Point::new(20., 20.));
+        assert_eq!(session.document.objects[1].points[0], Point::new(20., 50.));
+        session.document.undo();
+        assert_eq!(session.document.objects[0].points[0], Point::new(10., 10.));
+        assert_eq!(session.document.objects[1].points[0], Point::new(10., 40.));
+
+        session.duplicate_selected();
+        assert_eq!(session.document.objects.len(), 4);
+        assert_eq!(session.selected_indices(), vec![2, 3]);
+        session.document.undo();
+        assert_eq!(session.document.objects.len(), 2);
     }
     #[test]
     fn fast_eraser_motion_hits_objects_between_pointer_events() {

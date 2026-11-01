@@ -76,6 +76,25 @@ struct ScreenshotRequest {
     stage: ScreenshotStage,
 }
 
+struct Toast {
+    message: String,
+    error: bool,
+    until: std::time::Instant,
+}
+
+struct HoverTip {
+    view: usize,
+    action: Action,
+    started: std::time::Instant,
+    visible: bool,
+}
+
+struct CursorHighlight {
+    view: usize,
+    point: Point,
+    started: std::time::Instant,
+}
+
 fn decode_ppm(data: &[u8]) -> anyhow::Result<(usize, usize, Vec<u8>)> {
     fn token<'a>(data: &'a [u8], cursor: &mut usize) -> anyhow::Result<&'a [u8]> {
         loop {
@@ -159,6 +178,9 @@ struct State {
     caret_last_toggle: std::time::Instant,
     screenshot: Option<ScreenshotRequest>,
     clipboard: Option<arboard::Clipboard>,
+    toast: Option<Toast>,
+    hover_tip: Option<HoverTip>,
+    cursor_highlights: Vec<CursorHighlight>,
 }
 pub fn run(probe: bool, smoke_test: bool) -> Result<()> {
     let conn = Connection::connect_to_env()
@@ -212,6 +234,9 @@ pub fn run(probe: bool, smoke_test: bool) -> Result<()> {
         caret_last_toggle: std::time::Instant::now(),
         screenshot: None,
         clipboard: None,
+        toast: None,
+        hover_tip: None,
+        cursor_highlights: Vec::new(),
     };
     state.app.load_palette();
     queue.roundtrip(&mut state)?;

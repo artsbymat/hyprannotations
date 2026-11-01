@@ -47,6 +47,19 @@ impl State {
                     v.scale,
                     std::time::Instant::now(),
                 );
+                let now = std::time::Instant::now();
+                for highlight in self
+                    .cursor_highlights
+                    .iter()
+                    .filter(|highlight| highlight.view == i)
+                {
+                    let opacity = 1.0
+                        - now
+                            .saturating_duration_since(highlight.started)
+                            .as_secs_f32()
+                            / 0.9;
+                    ui::draw_cursor_highlight(pix, highlight.point, v.scale, opacity);
+                }
                 if let Some(a) = &v.session.draft {
                     if a.tool == Tool::Text && self.caret_visible {
                         self.renderer.draw_editing(pix, a, v.scale);
@@ -54,52 +67,56 @@ impl State {
                         self.renderer.draw(pix, a, v.scale);
                     }
                 }
-                if self.app.drawing
-                    && self.app.tool == Tool::Select
-                    && self.screenshot.is_none()
-                    && let Some(a) = v
-                        .session
-                        .selected
-                        .and_then(|i| v.session.document.objects.get(i))
-                    && let Some(r) = a.bounds()
-                {
-                    let marker = Annotation {
-                        tool: Tool::Rectangle,
-                        points: vec![
-                            Point::new(r.left() - 5., r.top() - 5.),
-                            Point::new(r.right() + 5., r.bottom() + 5.),
-                        ],
-                        color: [155, 216, 244, 200],
-                        width: 1.,
-                        filled: false,
-                        text: String::new(),
-                        font_size: 12.,
-                        image: None,
-                        number: None,
-                    };
-                    self.renderer.draw(pix, &marker, v.scale);
-                    if matches!(a.tool, Tool::Rectangle | Tool::Ellipse | Tool::Image) {
-                        for point in [
-                            Point::new(r.left(), r.top()),
-                            Point::new(r.right(), r.top()),
-                            Point::new(r.left(), r.bottom()),
-                            Point::new(r.right(), r.bottom()),
-                        ] {
-                            let handle = Annotation {
-                                tool: Tool::Rectangle,
-                                points: vec![
-                                    Point::new(point.x - 4.5, point.y - 4.5),
-                                    Point::new(point.x + 4.5, point.y + 4.5),
-                                ],
-                                color: [155, 216, 244, 255],
-                                width: 1.,
-                                filled: true,
-                                text: String::new(),
-                                font_size: 12.,
-                                image: None,
-                                number: None,
-                            };
-                            self.renderer.draw(pix, &handle, v.scale);
+                if self.app.drawing && self.app.tool == Tool::Select && self.screenshot.is_none() {
+                    for selected in v.session.selected_indices() {
+                        let Some(a) = v.session.document.objects.get(selected) else {
+                            continue;
+                        };
+                        let Some(r) = a.bounds() else { continue };
+                        let marker = Annotation {
+                            tool: Tool::Rectangle,
+                            points: vec![
+                                Point::new(r.left() - 5., r.top() - 5.),
+                                Point::new(r.right() + 5., r.bottom() + 5.),
+                            ],
+                            color: [155, 216, 244, 200],
+                            width: 1.,
+                            filled: false,
+                            text: String::new(),
+                            font_size: 12.,
+                            image: None,
+                            number: None,
+                        };
+                        self.renderer.draw(pix, &marker, v.scale);
+                        if v.session.selected == Some(selected)
+                            && matches!(a.tool, Tool::Rectangle | Tool::Ellipse | Tool::Image)
+                        {
+                            for point in [
+                                Point::new(r.left(), r.top()),
+                                Point::new(r.right(), r.top()),
+                                Point::new(r.left(), r.bottom()),
+                                Point::new(r.right(), r.bottom()),
+                            ] {
+                                let handle = Annotation {
+                                    tool: Tool::Rectangle,
+                                    points: vec![
+                                        Point::new(point.x - 4.5, point.y - 4.5),
+                                        Point::new(point.x + 4.5, point.y + 4.5),
+                                    ],
+                                    color: if v.session.crop_mode {
+                                        [255, 177, 92, 255]
+                                    } else {
+                                        [155, 216, 244, 255]
+                                    },
+                                    width: 1.,
+                                    filled: true,
+                                    text: String::new(),
+                                    font_size: 12.,
+                                    image: None,
+                                    number: None,
+                                };
+                                self.renderer.draw(pix, &handle, v.scale);
+                            }
                         }
                     }
                 }
@@ -119,6 +136,49 @@ impl State {
             });
             if !hide_toolbar {
                 ui::draw(pix, &self.app, tx / ts, ty / ts, ts * v.scale);
+            }
+            if self.screenshot.is_none() {
+                if let Some(toast) = &self.toast {
+                    let estimated_width = toast.message.chars().count() as f32 * 9.0 + 24.0;
+                    let message = Annotation {
+                        tool: Tool::Text,
+                        points: vec![Point::new(
+                            ((v.width as f32 - estimated_width) / 2.0).max(12.0),
+                            24.0,
+                        )],
+                        color: if toast.error {
+                            [180, 55, 70, 245]
+                        } else {
+                            [45, 120, 82, 245]
+                        },
+                        width: 1.0,
+                        filled: true,
+                        text: toast.message.clone(),
+                        font_size: 17.0,
+                        image: None,
+                        number: None,
+                    };
+                    self.renderer.draw(pix, &message, v.scale);
+                }
+                if let Some(hover) = &self.hover_tip
+                    && hover.visible
+                    && hover.view == i
+                    && let Some((pointer_view, point)) = self.pointer_position
+                    && pointer_view == i
+                {
+                    let tip = Annotation {
+                        tool: Tool::Text,
+                        points: vec![Point::new(point.x + 14.0, point.y + 18.0)],
+                        color: [18, 38, 46, 245],
+                        width: 1.0,
+                        filled: true,
+                        text: ui::tooltip(hover.action).into(),
+                        font_size: 14.0,
+                        image: None,
+                        number: None,
+                    };
+                    self.renderer.draw(pix, &tip, v.scale);
+                }
             }
             let (buffer, canvas) = self.pool.create_buffer(
                 width as i32,

@@ -18,7 +18,7 @@ pub const PICKER_ROWS: usize = 6;
 pub const PICKER_CELL: f32 = 14.0;
 pub const PICKER_WIDTH: f32 = PICKER_COLS as f32 * PICKER_CELL;
 pub const PICKER_HEIGHT: f32 = PICKER_Y + PICKER_ROWS as f32 * PICKER_CELL;
-pub const HELP_WIDTH: f32 = 700.0;
+pub const HELP_WIDTH: f32 = 980.0;
 pub const HELP_HEIGHT: f32 = 520.0;
 const HELP_ROW_HEIGHT: f32 = 30.0;
 const HELP_TOOLS: &[(&str, &str)] = &[
@@ -45,6 +45,16 @@ const HELP_ACTIONS: &[(&str, &str)] = &[
     ("Enter", "Commit text"),
     ("Escape", "Cancel or exit"),
     ("F1", "Close this help"),
+];
+const HELP_EDITING: &[(&str, &str)] = &[
+    ("Ctrl + Click", "Multi-select"),
+    ("Ctrl + D", "Duplicate selection"),
+    ("Ctrl + ]", "Bring forward"),
+    ("Ctrl + [", "Send backward"),
+    ("Shift + resize", "Free image resize"),
+    ("C", "Toggle image crop"),
+    ("Ctrl + R", "Rotate image"),
+    ("Ctrl + H", "Highlight cursor"),
 ];
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Action {
@@ -237,6 +247,49 @@ pub fn hit(app: &App, x: f32, y: f32) -> Option<Action> {
 pub fn enabled(action: Action, app: &App) -> bool {
     action != Action::Fill || app.supports_fill()
 }
+
+pub fn tooltip(action: Action) -> &'static str {
+    match action {
+        Action::Tool(Tool::Pen) => "Pen (P)",
+        Action::Tool(Tool::Highlighter) => "Highlighter (H)",
+        Action::Tool(Tool::Eraser) => "Eraser (E)",
+        Action::Tool(Tool::Line) => "Line (L)",
+        Action::Tool(Tool::Arrow) => "Arrow (A)",
+        Action::Tool(Tool::Rectangle) => "Rectangle (R)",
+        Action::Tool(Tool::Ellipse) => "Ellipse (O)",
+        Action::Tool(Tool::Text) => "Text (T)",
+        Action::Tool(Tool::Pointer) => "Laser pointer (Q)",
+        Action::Tool(Tool::Select) => "Select (V)",
+        Action::Tool(Tool::Image) => "Image",
+        Action::Color(_) => "Color slot (right-click to edit)",
+        Action::Picker => "Color picker",
+        Action::Width => "Stroke width",
+        Action::Fill => "Fill background",
+        Action::Numbering => "Automatic numbering",
+        Action::Undo => "Undo (Ctrl+Z)",
+        Action::Redo => "Redo (Ctrl+Shift+Z)",
+        Action::Clear => "Clear canvas",
+        Action::Delete => "Delete selection",
+        Action::Desktop => "Desktop mode (Tab)",
+        Action::Exit => "Exit (double-click or Escape twice)",
+    }
+}
+
+pub fn draw_cursor_highlight(pix: &mut Pixmap, point: Point, scale: f32, opacity: f32) {
+    if let Some(circle) = PathBuilder::from_circle(point.x, point.y, 24.0 + 12.0 * (1.0 - opacity))
+    {
+        pix.stroke_path(
+            &circle,
+            &paint([255, 80, 110, (opacity.clamp(0.0, 1.0) * 230.0) as u8]),
+            &Stroke {
+                width: 4.0,
+                ..Stroke::default()
+            },
+            Transform::from_scale(scale, scale),
+            None,
+        );
+    }
+}
 fn rounded(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia::Path> {
     let mut p = PathBuilder::new();
     p.move_to(x + r, y);
@@ -290,8 +343,9 @@ pub fn draw_help_background(pix: &mut Pixmap, width: f32, height: f32, scale: f3
     let card_y = y + 82.0;
     let card_height = panel_height - 134.0;
     let gap = 14.0;
-    let card_width = (panel_width - 56.0 - gap) / 2.0;
-    for card_x in [x + 28.0, x + 28.0 + card_width + gap] {
+    let card_width = (panel_width - 56.0 - gap * 2.0) / 3.0;
+    for column in 0..3 {
+        let card_x = x + 28.0 + column as f32 * (card_width + gap);
         if let Some(path) = rounded(card_x, card_y, card_width, card_height, 12.0) {
             pix.fill_path(
                 &path,
@@ -313,7 +367,10 @@ pub fn draw_help_background(pix: &mut Pixmap, width: f32, height: f32, scale: f3
         }
     }
 
-    for (column, items) in [HELP_TOOLS, HELP_ACTIONS].into_iter().enumerate() {
+    for (column, items) in [HELP_TOOLS, HELP_ACTIONS, HELP_EDITING]
+        .into_iter()
+        .enumerate()
+    {
         let card_x = x + 28.0 + column as f32 * (card_width + gap);
         for row in 0..items.len() {
             let key_x = card_x + 16.0;
@@ -347,7 +404,7 @@ pub fn help_text(width: f32, height: f32) -> Vec<Annotation> {
     let panel_height = HELP_HEIGHT.min(height - 32.0).max(280.0);
     let panel_x = (width - panel_width) / 2.0;
     let panel_y = (height - panel_height) / 2.0;
-    let card_width = (panel_width - 70.0) / 2.0;
+    let card_width = (panel_width - 84.0) / 3.0;
     let annotation = |x, y, text: &str, font_size, color| Annotation {
         tool: Tool::Text,
         points: vec![Point::new(x, y)],
@@ -375,9 +432,13 @@ pub fn help_text(width: f32, height: f32) -> Vec<Annotation> {
             [126, 157, 166, 255],
         ),
     ];
-    for (column, (title, items)) in [("DRAWING TOOLS", HELP_TOOLS), ("ACTIONS", HELP_ACTIONS)]
-        .into_iter()
-        .enumerate()
+    for (column, (title, items)) in [
+        ("DRAWING TOOLS", HELP_TOOLS),
+        ("ACTIONS", HELP_ACTIONS),
+        ("SELECT & IMAGE", HELP_EDITING),
+    ]
+    .into_iter()
+    .enumerate()
     {
         let card_x = panel_x + 28.0 + column as f32 * (card_width + 14.0);
         text.push(annotation(

@@ -81,8 +81,16 @@ bind = SUPER SHIFT, A, exec, hyprannotations
 | `Ctrl + Shift + Z` | **Redo** | Redo previously undone actions |
 | `Ctrl + V` | **Paste Image** | Paste an image from the clipboard at the pointer position |
 | `Ctrl + C` | **Copy Screenshot** | Copy the active monitor with annotations, excluding the toolbar |
+| `Ctrl + Click` | **Multi-select** | Add or remove an annotation from the current selection |
+| `Ctrl + D` | **Duplicate** | Duplicate selected annotations with a small offset |
+| `Ctrl + ]` | **Bring Forward** | Move selected annotations one layer forward |
+| `Ctrl + [` | **Send Backward** | Move selected annotations one layer backward |
+| `Shift + resize` | **Free Image Resize** | Resize an image without preserving its aspect ratio |
+| `C` | **Crop Mode** | Toggle crop handles for the selected pasted image |
+| `Ctrl + R` | **Rotate Image** | Rotate selected pasted images 90 degrees clockwise |
+| `Ctrl + H` | **Cursor Highlight** | Show a temporary highlight around the cursor |
 | `Tab` | **Desktop Mode** | Pass pointer & keyboard input to desktop windows while keeping drawings visible |
-| `Escape` | **Cancel / Exit** | Cancel active text input, or close the overlay |
+| `Escape` | **Cancel / Exit** | Cancel active text/help, or press twice within two seconds to exit |
 | `Mouse Wheel` | **Stroke Width** | Scroll up/down to increase or decrease stroke size |
 | `F1` | **Shortcut Help** | Show or hide the keyboard shortcut help overlay |
 

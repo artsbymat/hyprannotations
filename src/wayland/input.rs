@@ -146,6 +146,14 @@ impl PointerHandler for State {
             let (tx, ty, ts) = self.toolbar(index);
             let ux = (p.x - tx) / ts;
             let uy = (p.y - ty) / ts;
+            if matches!(event.kind, Enter { .. } | Motion { .. }) {
+                let hovered = ui::inside_background(&self.app, ux, uy)
+                    .then(|| ui::hit(&self.app, ux, uy))
+                    .flatten();
+                self.update_hover(index, hovered);
+            } else if matches!(event.kind, Leave { .. }) {
+                self.update_hover(index, None);
+            }
             match event.kind {
                 PointerEventKind::Leave { .. } => self.pointer_position = None,
                 _ => self.pointer_position = Some((index, p)),
@@ -160,6 +168,7 @@ impl PointerHandler for State {
                     self.finish_gesture(index);
                 }
                 Press { button: 0x111, .. } => {
+                    self.app.cancel_exit_request();
                     if let Some(Action::Color(slot)) = ui::hit(&self.app, ux, uy) {
                         self.app.select_color(slot);
                         self.app.color_picker = true;
@@ -168,6 +177,9 @@ impl PointerHandler for State {
                 }
                 Press { button: 0x110, .. } => {
                     self.focused = Some(index);
+                    if ui::hit(&self.app, ux, uy) != Some(Action::Exit) {
+                        self.app.cancel_exit_request();
+                    }
                     if self.app.drawing
                         && self.app.color_picker
                         && let Some(color) = ui::picker_color(ux, uy)
@@ -194,7 +206,9 @@ impl PointerHandler for State {
                         continue;
                     }
                     self.pressed = true;
-                    self.views[index].session.begin(&self.app, p);
+                    self.views[index]
+                        .session
+                        .begin_additive(&self.app, p, self.modifiers.ctrl);
                     self.views[index].dirty = true;
                     if self.app.tool == Tool::Text {
                         self.reset_caret_blink();
@@ -220,7 +234,9 @@ impl PointerHandler for State {
                     if !self.pressed {
                         continue;
                     }
-                    self.views[index].session.motion(&self.app, p);
+                    self.views[index]
+                        .session
+                        .motion_free(&self.app, p, self.modifiers.shift);
                     self.views[index].dirty = true;
                     self.update_cursor(index, p);
                 }
@@ -241,6 +257,35 @@ impl PointerHandler for State {
 }
 
 impl State {
+    fn notify(&mut self, message: impl Into<String>, error: bool) {
+        self.toast = Some(Toast {
+            message: message.into(),
+            error,
+            until: std::time::Instant::now() + std::time::Duration::from_secs(2),
+        });
+        self.dirty_all();
+    }
+
+    fn update_hover(&mut self, view: usize, action: Option<Action>) {
+        let unchanged = self
+            .hover_tip
+            .as_ref()
+            .is_some_and(|hover| hover.view == view && Some(hover.action) == action);
+        if unchanged {
+            return;
+        }
+        let was_visible = self.hover_tip.as_ref().is_some_and(|hover| hover.visible);
+        self.hover_tip = action.map(|action| HoverTip {
+            view,
+            action,
+            started: std::time::Instant::now(),
+            visible: false,
+        });
+        if was_visible {
+            self.dirty_all();
+        }
+    }
+
     fn update_cursor(&self, index: usize, point: Point) {
         let (Some(device), Some(serial)) = (&self.cursor_device, self.pointer_enter_serial) else {
             return;
@@ -317,8 +362,11 @@ impl State {
             view.dirty = true;
         }
         match result {
-            Ok(()) => eprintln!("Screenshot copied to clipboard"),
-            Err(error) => eprintln!("Copy screenshot: {error}"),
+            Ok(()) => self.notify("Screenshot copied to clipboard", false),
+            Err(error) => {
+                eprintln!("Copy screenshot: {error}");
+                self.notify(format!("Screenshot failed: {error}"), true);
+            }
         }
     }
 
@@ -423,10 +471,21 @@ impl State {
                     annotation.number = Some(view.session.document.next_number());
                 }
                 view.session.document.add(annotation);
-                view.session.selected = view.session.document.objects.len().checked_sub(1);
+                view.session.set_selection(
+                    view.session
+                        .document
+                        .objects
+                        .len()
+                        .checked_sub(1)
+                        .into_iter()
+                        .collect(),
+                );
                 view.dirty = true;
             }
-            Err(error) => eprintln!("Paste image: {error}"),
+            Err(error) => {
+                eprintln!("Paste image: {error}");
+                self.notify("Clipboard does not contain a supported image", true);
+            }
         }
     }
 
@@ -452,12 +511,15 @@ impl State {
         if !ui::enabled(action, &self.app) {
             return;
         }
+        if action != Action::Exit {
+            self.app.cancel_exit_request();
+        }
         // Toggling the text background must not end the active text edit.
         if !matches!(action, Action::Fill) {
             self.commit_text(index);
         }
         if matches!(action, Action::Undo | Action::Redo | Action::Clear) {
-            self.views[index].session.selected = None;
+            self.views[index].session.clear_selection();
         }
         match action {
             Action::Tool(t) => {
@@ -490,9 +552,7 @@ impl State {
             Action::Redo => self.views[index].session.document.redo(),
             Action::Clear => self.views[index].session.document.clear(),
             Action::Delete => {
-                if let Some(selected) = self.views[index].session.selected.take() {
-                    self.views[index].session.document.delete(selected);
-                }
+                self.views[index].session.delete_selected();
             }
             Action::Desktop => {
                 self.finish_gesture(index);
@@ -505,7 +565,11 @@ impl State {
                 self.drag_origin = None;
                 self.modifiers = Modifiers::default();
             }
-            Action::Exit => self.app.exit = true,
+            Action::Exit => {
+                if !self.app.request_exit() {
+                    self.notify("Press Escape or click Exit again to close", false);
+                }
+            }
         }
         self.dirty_all();
     }
@@ -519,6 +583,9 @@ impl State {
         let Some(index) = self.focused.filter(|i| *i < self.views.len()) else {
             return;
         };
+        if event.keysym != Keysym::Escape {
+            self.app.cancel_exit_request();
+        }
         if event.keysym == Keysym::F1 {
             self.app.help_visible = !self.app.help_visible;
             self.app.color_picker = false;
@@ -545,9 +612,70 @@ impl State {
             && event
                 .keysym
                 .key_char()
+                .is_some_and(|key| key == 'h' || key == 'H')
+        {
+            if let Some((view, point)) = self.pointer_position {
+                self.cursor_highlights.push(CursorHighlight {
+                    view,
+                    point,
+                    started: std::time::Instant::now(),
+                });
+                self.views[view].dirty = true;
+            }
+            return;
+        }
+        if self.modifiers.ctrl
+            && event
+                .keysym
+                .key_char()
+                .is_some_and(|key| key == 'r' || key == 'R')
+        {
+            self.views[index].session.rotate_selected_images();
+            self.views[index].dirty = true;
+            return;
+        }
+        if !self.modifiers.ctrl
+            && !self.modifiers.alt
+            && event
+                .keysym
+                .key_char()
+                .is_some_and(|key| key == 'c' || key == 'C')
+            && self.app.tool == Tool::Select
+        {
+            let enabled = self.views[index].session.toggle_crop_mode();
+            self.views[index].dirty = true;
+            match enabled {
+                Some(true) => self.notify("Crop mode enabled — drag a corner handle", false),
+                Some(false) => self.notify("Crop mode disabled", false),
+                None => self.notify("Select a pasted image before cropping", true),
+            }
+            return;
+        }
+        if self.modifiers.ctrl
+            && event
+                .keysym
+                .key_char()
                 .is_some_and(|key| key == 'c' || key == 'C')
         {
             self.request_screenshot(index);
+            return;
+        }
+        if self.modifiers.ctrl
+            && event
+                .keysym
+                .key_char()
+                .is_some_and(|key| key == 'd' || key == 'D')
+        {
+            self.views[index].session.duplicate_selected();
+            self.views[index].dirty = true;
+            return;
+        }
+        if self.modifiers.ctrl
+            && let Some(key) = event.keysym.key_char()
+            && matches!(key, '[' | ']')
+        {
+            self.views[index].session.reorder_selected(key == ']');
+            self.views[index].dirty = true;
             return;
         }
         if self.views[index]
@@ -626,18 +754,30 @@ impl State {
     const CARET_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
     pub(super) fn animation_timeout(&self) -> Option<std::time::Duration> {
-        let caret = self
+        let mut timeout = self
             .has_text_draft()
             .then(|| Self::CARET_INTERVAL.saturating_sub(self.caret_last_toggle.elapsed()));
-        if self.views.iter().any(|view| view.session.pointer_active()) {
-            Some(
-                caret.map_or(std::time::Duration::from_millis(16), |duration| {
-                    duration.min(std::time::Duration::from_millis(16))
-                }),
-            )
-        } else {
-            caret
+        let mut include = |duration| {
+            timeout = Some(timeout.map_or(duration, |current| current.min(duration)));
+        };
+        if self.views.iter().any(|view| view.session.pointer_active())
+            || !self.cursor_highlights.is_empty()
+        {
+            include(std::time::Duration::from_millis(16));
         }
+        if let Some(toast) = &self.toast {
+            include(
+                toast
+                    .until
+                    .saturating_duration_since(std::time::Instant::now()),
+            );
+        }
+        if let Some(hover) = &self.hover_tip
+            && !hover.visible
+        {
+            include(std::time::Duration::from_millis(600).saturating_sub(hover.started.elapsed()));
+        }
+        timeout
     }
 
     pub(super) fn update_animations(&mut self) {
@@ -645,6 +785,31 @@ impl State {
         let now = std::time::Instant::now();
         for view in &mut self.views {
             if view.session.animate_pointer(now) {
+                view.dirty = true;
+            }
+        }
+        if self.toast.as_ref().is_some_and(|toast| now >= toast.until) {
+            self.toast = None;
+            self.dirty_all();
+        }
+        if let Some(hover) = &mut self.hover_tip
+            && !hover.visible
+            && hover.started.elapsed() >= std::time::Duration::from_millis(600)
+        {
+            hover.visible = true;
+            if let Some(view) = self.views.get_mut(hover.view) {
+                view.dirty = true;
+            }
+        }
+        let mut dirty_views = std::collections::BTreeSet::new();
+        self.cursor_highlights.retain(|highlight| {
+            let active = now.saturating_duration_since(highlight.started)
+                < std::time::Duration::from_millis(900);
+            dirty_views.insert(highlight.view);
+            active
+        });
+        for view in dirty_views {
+            if let Some(view) = self.views.get_mut(view) {
                 view.dirty = true;
             }
         }

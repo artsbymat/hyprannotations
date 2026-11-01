@@ -274,8 +274,10 @@ enum Command {
     Add(Annotation),
     Remove(Vec<(usize, Annotation)>),
     Clear(Vec<Annotation>),
-    Move(usize, Point),
-    Resize(usize, Vec<Point>, Vec<Point>),
+    Move(Vec<usize>, Point),
+    Transform(usize, Annotation, Annotation),
+    AddMany(Vec<Annotation>),
+    ReplaceAll(Vec<Annotation>, Vec<Annotation>),
 }
 #[derive(Default)]
 pub struct Document {
@@ -320,6 +322,7 @@ impl Document {
         self.undo.push(Command::Remove(removed));
         self.redo.clear();
     }
+    #[cfg(test)]
     pub fn delete(&mut self, index: usize) {
         if index >= self.objects.len() {
             return;
@@ -336,19 +339,148 @@ impl Document {
             }
         }
     }
+    #[cfg(test)]
     pub fn record_move(&mut self, index: usize, delta: Point) {
+        self.record_moves(vec![index], delta);
+    }
+    pub fn record_moves(&mut self, indices: Vec<usize>, delta: Point) {
         if delta.x != 0. || delta.y != 0. {
-            self.undo.push(Command::Move(index, delta));
+            self.undo.push(Command::Move(indices, delta));
             self.redo.clear();
         }
     }
-    pub fn record_resize(&mut self, index: usize, before: Vec<Point>) {
+
+    pub fn delete_many(&mut self, indices: &[usize]) {
+        let removed: Vec<_> = indices
+            .iter()
+            .copied()
+            .filter(|index| *index < self.objects.len())
+            .map(|index| (index, self.objects[index].clone()))
+            .collect();
+        for (index, _) in removed.iter().rev() {
+            self.objects.remove(*index);
+        }
+        if !removed.is_empty() {
+            self.undo.push(Command::Remove(removed));
+            self.redo.clear();
+        }
+    }
+
+    pub fn duplicate(&mut self, indices: &[usize]) -> Vec<usize> {
+        let mut next_number = self.next_number();
+        let copies: Vec<_> = indices
+            .iter()
+            .filter_map(|index| self.objects.get(*index).cloned())
+            .map(|mut annotation| {
+                for point in &mut annotation.points {
+                    point.x += 12.0;
+                    point.y += 12.0;
+                }
+                if annotation.number.is_some() {
+                    annotation.number = Some(next_number);
+                    next_number = next_number.saturating_add(1);
+                }
+                annotation
+            })
+            .collect();
+        let start = self.objects.len();
+        self.objects.extend(copies.iter().cloned());
+        if !copies.is_empty() {
+            self.undo.push(Command::AddMany(copies));
+            self.redo.clear();
+        }
+        (start..self.objects.len()).collect()
+    }
+
+    pub fn reorder(&mut self, indices: &[usize], forward: bool) -> Vec<usize> {
+        let before = self.objects.clone();
+        let mut selected: std::collections::BTreeSet<_> = indices.iter().copied().collect();
+        let mut changed = false;
+        if forward {
+            for index in (0..self.objects.len().saturating_sub(1)).rev() {
+                if selected.contains(&index) && !selected.contains(&(index + 1)) {
+                    self.objects.swap(index, index + 1);
+                    selected.remove(&index);
+                    selected.insert(index + 1);
+                    changed = true;
+                }
+            }
+        } else {
+            for index in 1..self.objects.len() {
+                if selected.contains(&index) && !selected.contains(&(index - 1)) {
+                    self.objects.swap(index, index - 1);
+                    selected.remove(&index);
+                    selected.insert(index - 1);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.undo
+                .push(Command::ReplaceAll(before, self.objects.clone()));
+            self.redo.clear();
+        }
+        selected.into_iter().collect()
+    }
+    pub fn record_transform(&mut self, index: usize, before: Annotation) {
         let Some(annotation) = self.objects.get(index) else {
             return;
         };
-        if annotation.points != before {
+        let image_changed = match (&annotation.image, &before.image) {
+            (Some(current), Some(previous)) => !std::sync::Arc::ptr_eq(current, previous),
+            (None, None) => false,
+            _ => true,
+        };
+        if annotation.points != before.points || image_changed {
             self.undo
-                .push(Command::Resize(index, before, annotation.points.clone()));
+                .push(Command::Transform(index, before, annotation.clone()));
+            self.redo.clear();
+        }
+    }
+
+    pub fn rotate_images(&mut self, indices: &[usize]) {
+        let before = self.objects.clone();
+        let mut changed = false;
+        for index in indices {
+            let Some(annotation) = self.objects.get_mut(*index) else {
+                continue;
+            };
+            let Some(source) = annotation.image.as_ref() else {
+                continue;
+            };
+            let mut rotated = Pixmap::new(source.height(), source.width()).unwrap();
+            for y in 0..source.height() {
+                for x in 0..source.width() {
+                    let source_offset = ((y * source.width() + x) * 4) as usize;
+                    let destination_x = source.height() - 1 - y;
+                    let destination_y = x;
+                    let destination_offset =
+                        ((destination_y * rotated.width() + destination_x) * 4) as usize;
+                    rotated.data_mut()[destination_offset..destination_offset + 4]
+                        .copy_from_slice(&source.data()[source_offset..source_offset + 4]);
+                }
+            }
+            let bounds = annotation.bounds().unwrap();
+            let center = Point::new(
+                (bounds.left() + bounds.right()) / 2.0,
+                (bounds.top() + bounds.bottom()) / 2.0,
+            );
+            annotation.points = vec![
+                Point::new(
+                    center.x - bounds.height() / 2.0,
+                    center.y - bounds.width() / 2.0,
+                ),
+                Point::new(
+                    center.x + bounds.height() / 2.0,
+                    center.y + bounds.width() / 2.0,
+                ),
+            ];
+            annotation.image = Some(std::sync::Arc::new(rotated));
+            changed = true;
+        }
+        if changed {
+            self.undo
+                .push(Command::ReplaceAll(before, self.objects.clone()));
             self.redo.clear();
         }
     }
@@ -373,12 +505,14 @@ impl Document {
                 }
             }
             Command::Clear(items) => self.objects = items.clone(),
-            Command::Move(i, d) => self.translate(*i, Point::new(-d.x, -d.y)),
-            Command::Resize(i, before, _) => {
-                if let Some(annotation) = self.objects.get_mut(*i) {
-                    annotation.points.clone_from(before);
+            Command::Move(indices, d) => {
+                for index in indices {
+                    self.translate(*index, Point::new(-d.x, -d.y));
                 }
             }
+            Command::Transform(i, before, _) => self.objects[*i] = before.clone(),
+            Command::AddMany(items) => self.objects.truncate(self.objects.len() - items.len()),
+            Command::ReplaceAll(before, _) => self.objects.clone_from(before),
         }
         self.redo.push(command);
     }
@@ -394,12 +528,14 @@ impl Document {
                 }
             }
             Command::Clear(_) => self.objects.clear(),
-            Command::Move(i, d) => self.translate(*i, *d),
-            Command::Resize(i, _, after) => {
-                if let Some(annotation) = self.objects.get_mut(*i) {
-                    annotation.points.clone_from(after);
+            Command::Move(indices, d) => {
+                for index in indices {
+                    self.translate(*index, *d);
                 }
             }
+            Command::Transform(i, _, after) => self.objects[*i] = after.clone(),
+            Command::AddMany(items) => self.objects.extend(items.iter().cloned()),
+            Command::ReplaceAll(_, after) => self.objects.clone_from(after),
         }
         self.undo.push(command);
     }
@@ -703,6 +839,35 @@ mod tests {
         d.add(line());
         d.redo();
         assert_eq!(d.objects.len(), 1);
+    }
+
+    #[test]
+    fn layer_reordering_is_undoable() {
+        let mut document = Document::default();
+        for red in [10, 20, 30] {
+            let mut annotation = line();
+            annotation.color[0] = red;
+            document.add(annotation);
+        }
+        let selected = document.reorder(&[0], true);
+        assert_eq!(selected, vec![1]);
+        assert_eq!(
+            document
+                .objects
+                .iter()
+                .map(|annotation| annotation.color[0])
+                .collect::<Vec<_>>(),
+            vec![20, 10, 30]
+        );
+        document.undo();
+        assert_eq!(
+            document
+                .objects
+                .iter()
+                .map(|annotation| annotation.color[0])
+                .collect::<Vec<_>>(),
+            vec![10, 20, 30]
+        );
     }
     #[test]
     fn hit_geometry() {
