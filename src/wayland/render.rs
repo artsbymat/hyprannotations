@@ -56,6 +56,7 @@ impl State {
                 }
                 if self.app.drawing
                     && self.app.tool == Tool::Select
+                    && self.screenshot.is_none()
                     && let Some(a) = v
                         .session
                         .selected
@@ -76,6 +77,29 @@ impl State {
                         image: None,
                     };
                     self.renderer.draw(pix, &marker, v.scale);
+                    if matches!(a.tool, Tool::Rectangle | Tool::Ellipse | Tool::Image) {
+                        for point in [
+                            Point::new(r.left(), r.top()),
+                            Point::new(r.right(), r.top()),
+                            Point::new(r.left(), r.bottom()),
+                            Point::new(r.right(), r.bottom()),
+                        ] {
+                            let handle = Annotation {
+                                tool: Tool::Rectangle,
+                                points: vec![
+                                    Point::new(point.x - 4.5, point.y - 4.5),
+                                    Point::new(point.x + 4.5, point.y + 4.5),
+                                ],
+                                color: [155, 216, 244, 255],
+                                width: 1.,
+                                filled: true,
+                                text: String::new(),
+                                font_size: 12.,
+                                image: None,
+                            };
+                            self.renderer.draw(pix, &handle, v.scale);
+                        }
+                    }
                 }
                 if self.app.help_visible {
                     ui::draw_help_background(pix, v.width as f32, v.height as f32, v.scale);

@@ -6,6 +6,24 @@ use std::{
 };
 
 pub const POINTER_TRAIL_LIFETIME: Duration = Duration::from_millis(900);
+const RESIZE_HANDLE_RADIUS: f32 = 9.0;
+const MIN_RESIZE_SIZE: f32 = 8.0;
+
+#[derive(Clone, Copy, Debug)]
+enum ResizeCorner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+struct ResizeGesture {
+    index: usize,
+    corner: ResizeCorner,
+    before: Vec<Point>,
+    original_width: f32,
+    original_height: f32,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct PointerTrailPoint {
@@ -31,12 +49,64 @@ pub struct Session {
     erase_points: Vec<Point>,
     move_origin: Option<Point>,
     move_last: Option<Point>,
+    resize: Option<ResizeGesture>,
 }
 impl Session {
+    fn resize_handle_at(&self, point: Point) -> Option<(usize, ResizeCorner)> {
+        let index = self.selected?;
+        let annotation = self.document.objects.get(index)?;
+        if !matches!(
+            annotation.tool,
+            Tool::Rectangle | Tool::Ellipse | Tool::Image
+        ) {
+            return None;
+        }
+        let bounds = annotation.bounds()?;
+        [
+            (
+                Point::new(bounds.left(), bounds.top()),
+                ResizeCorner::TopLeft,
+            ),
+            (
+                Point::new(bounds.right(), bounds.top()),
+                ResizeCorner::TopRight,
+            ),
+            (
+                Point::new(bounds.left(), bounds.bottom()),
+                ResizeCorner::BottomLeft,
+            ),
+            (
+                Point::new(bounds.right(), bounds.bottom()),
+                ResizeCorner::BottomRight,
+            ),
+        ]
+        .into_iter()
+        .find(|(handle, _)| handle.distance(point) <= RESIZE_HANDLE_RADIUS)
+        .map(|(_, corner)| (index, corner))
+    }
+
+    pub fn over_resize_handle(&self, point: Point) -> bool {
+        self.resize_handle_at(point).is_some()
+    }
+
     pub fn begin(&mut self, app: &App, p: Point) {
         match app.tool {
             Tool::Eraser => self.erase_points.push(p),
             Tool::Select => {
+                if let Some((index, corner)) = self.resize_handle_at(p) {
+                    let annotation = &self.document.objects[index];
+                    let bounds = annotation.bounds().expect("resizable object has bounds");
+                    self.resize = Some(ResizeGesture {
+                        index,
+                        corner,
+                        before: annotation.points.clone(),
+                        original_width: bounds.width(),
+                        original_height: bounds.height(),
+                    });
+                    self.move_origin = None;
+                    self.move_last = None;
+                    return;
+                }
                 let v = &mut *self;
                 v.selected = v.document.objects.iter().rposition(|a| a.hit(p, 5.));
                 v.move_origin = Some(p);
@@ -66,11 +136,55 @@ impl Session {
                 );
             }
         } else if app.tool == Tool::Select {
-            if let (Some(selected), Some(last)) = (v.selected, v.move_last) {
+            if let Some(resize) = &v.resize {
+                let Some(annotation) = v.document.objects.get_mut(resize.index) else {
+                    return;
+                };
+                let Some(original) = annotation.bounds() else {
+                    return;
+                };
+                let (opposite, sign_x, sign_y) = match resize.corner {
+                    ResizeCorner::TopLeft => {
+                        (Point::new(original.right(), original.bottom()), -1.0, -1.0)
+                    }
+                    ResizeCorner::TopRight => {
+                        (Point::new(original.left(), original.bottom()), 1.0, -1.0)
+                    }
+                    ResizeCorner::BottomLeft => {
+                        (Point::new(original.right(), original.top()), -1.0, 1.0)
+                    }
+                    ResizeCorner::BottomRight => {
+                        (Point::new(original.left(), original.top()), 1.0, 1.0)
+                    }
+                };
+                let (width, height) = if annotation.tool == Tool::Image {
+                    let base_x = sign_x * resize.original_width;
+                    let base_y = sign_y * resize.original_height;
+                    let projected = ((p.x - opposite.x) * base_x + (p.y - opposite.y) * base_y)
+                        / (base_x * base_x + base_y * base_y);
+                    let minimum = (MIN_RESIZE_SIZE / resize.original_width)
+                        .max(MIN_RESIZE_SIZE / resize.original_height);
+                    let scale = projected.max(minimum);
+                    (
+                        resize.original_width * scale,
+                        resize.original_height * scale,
+                    )
+                } else {
+                    (
+                        ((p.x - opposite.x) * sign_x).max(MIN_RESIZE_SIZE),
+                        ((p.y - opposite.y) * sign_y).max(MIN_RESIZE_SIZE),
+                    )
+                };
+                let target = Point::new(opposite.x + sign_x * width, opposite.y + sign_y * height);
+                annotation.points = vec![
+                    Point::new(opposite.x.min(target.x), opposite.y.min(target.y)),
+                    Point::new(opposite.x.max(target.x), opposite.y.max(target.y)),
+                ];
+            } else if let (Some(selected), Some(last)) = (v.selected, v.move_last) {
                 v.document
                     .translate(selected, Point::new(p.x - last.x, p.y - last.y));
+                v.move_last = Some(p);
             }
-            v.move_last = Some(p);
         } else if app.tool == Tool::Eraser {
             let start = v.erase_points.last().copied().unwrap_or(p);
             let n = (start.distance(p) / (app.width.max(2.))).ceil() as usize;
@@ -123,6 +237,9 @@ impl Session {
     }
     pub fn finish(&mut self, app: &App) {
         let v = &mut *self;
+        if let Some(resize) = v.resize.take() {
+            v.document.record_resize(resize.index, resize.before);
+        }
         if let (Some(selected), Some(origin), Some(last)) =
             (v.selected, v.move_origin.take(), v.move_last.take())
         {
@@ -167,6 +284,59 @@ mod tests {
         assert!(session.document.objects.is_empty());
         session.document.undo();
         assert_eq!(session.document.objects.len(), 1);
+    }
+
+    #[test]
+    fn rectangle_resize_is_one_undoable_command() {
+        let mut app = App::new(Settings::default());
+        app.tool = Tool::Rectangle;
+        let mut session = Session::default();
+        session.begin(&app, Point::new(10., 10.));
+        session.motion(&app, Point::new(50., 40.));
+        session.finish(&app);
+
+        app.tool = Tool::Select;
+        session.begin(&app, Point::new(10., 10.));
+        session.finish(&app);
+        session.begin(&app, Point::new(50., 40.));
+        session.motion(&app, Point::new(90., 70.));
+        session.finish(&app);
+
+        let bounds = session.document.objects[0].bounds().unwrap();
+        assert_eq!((bounds.width(), bounds.height()), (80., 60.));
+        session.document.undo();
+        let bounds = session.document.objects[0].bounds().unwrap();
+        assert_eq!((bounds.width(), bounds.height()), (40., 30.));
+        session.document.redo();
+        let bounds = session.document.objects[0].bounds().unwrap();
+        assert_eq!((bounds.width(), bounds.height()), (80., 60.));
+    }
+
+    #[test]
+    fn image_resize_preserves_aspect_ratio() {
+        let mut app = App::new(Settings::default());
+        app.tool = Tool::Select;
+        let mut session = Session::default();
+        session.document.add(Annotation {
+            tool: Tool::Image,
+            points: vec![Point::new(10., 10.), Point::new(110., 60.)],
+            color: [255; 4],
+            width: 1.,
+            filled: false,
+            text: String::new(),
+            font_size: 12.,
+            image: Some(std::sync::Arc::new(tiny_skia::Pixmap::new(2, 1).unwrap())),
+        });
+        session.selected = Some(0);
+        session.begin(&app, Point::new(110., 60.));
+        session.motion(&app, Point::new(210., 130.));
+        session.finish(&app);
+
+        let bounds = session.document.objects[0].bounds().unwrap();
+        assert!((bounds.width() / bounds.height() - 2.).abs() < 0.001);
+        session.document.undo();
+        let bounds = session.document.objects[0].bounds().unwrap();
+        assert_eq!((bounds.width(), bounds.height()), (100., 50.));
     }
     #[test]
     fn fast_eraser_motion_hits_objects_between_pointer_events() {

@@ -74,7 +74,7 @@ bind = SUPER SHIFT, A, exec, hyprannotations
 | `O` | **Ellipse** | Draw circles and ellipses (supports outline or fill) |
 | `T` | **Text** | Click to place, `Shift+Enter` for multiline, `Enter` to commit |
 | `Q` | **Laser Pointer** | Temporary glowing trail that fades out automatically |
-| `V` | **Select** | Click any object to select, drag to reposition |
+| `V` | **Select** | Select and move objects; drag corner handles to resize rectangles, ellipses, and images |
 | `Delete` | **Delete** | Delete the currently selected annotation |
 | `Ctrl + Z` | **Undo** | Undo the last action on the current monitor |
 | `Ctrl + Shift + Z` | **Redo** | Redo previously undone actions |

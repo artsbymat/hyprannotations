@@ -265,6 +265,10 @@ impl State {
                 }
             } else if !self.app.drawing {
                 Shape::Default
+            } else if self.app.tool == Tool::Select
+                && self.views[index].session.over_resize_handle(point)
+            {
+                Shape::Grab
             } else {
                 match self.app.tool {
                     Tool::Text => Shape::Text,

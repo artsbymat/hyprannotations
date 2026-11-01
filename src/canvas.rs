@@ -259,6 +259,7 @@ enum Command {
     Remove(Vec<(usize, Annotation)>),
     Clear(Vec<Annotation>),
     Move(usize, Point),
+    Resize(usize, Vec<Point>, Vec<Point>),
 }
 #[derive(Default)]
 pub struct Document {
@@ -316,6 +317,16 @@ impl Document {
             self.redo.clear();
         }
     }
+    pub fn record_resize(&mut self, index: usize, before: Vec<Point>) {
+        let Some(annotation) = self.objects.get(index) else {
+            return;
+        };
+        if annotation.points != before {
+            self.undo
+                .push(Command::Resize(index, before, annotation.points.clone()));
+            self.redo.clear();
+        }
+    }
     pub fn clear(&mut self) {
         if !self.objects.is_empty() {
             self.undo
@@ -338,6 +349,11 @@ impl Document {
             }
             Command::Clear(items) => self.objects = items.clone(),
             Command::Move(i, d) => self.translate(*i, Point::new(-d.x, -d.y)),
+            Command::Resize(i, before, _) => {
+                if let Some(annotation) = self.objects.get_mut(*i) {
+                    annotation.points.clone_from(before);
+                }
+            }
         }
         self.redo.push(command);
     }
@@ -354,6 +370,11 @@ impl Document {
             }
             Command::Clear(_) => self.objects.clear(),
             Command::Move(i, d) => self.translate(*i, *d),
+            Command::Resize(i, _, after) => {
+                if let Some(annotation) = self.objects.get_mut(*i) {
+                    annotation.points.clone_from(after);
+                }
+            }
         }
         self.undo.push(command);
     }
