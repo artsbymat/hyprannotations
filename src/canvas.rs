@@ -183,16 +183,21 @@ impl Document {
         self.redo.clear();
     }
     pub fn erase(&mut self, points: &[Point], radius: f32) {
-        let removed: Vec<_> = self
-            .objects
-            .iter()
-            .enumerate()
-            .filter(|(_, a)| points.iter().any(|p| a.hit(*p, radius)))
-            .map(|(i, a)| (i, a.clone()))
-            .collect();
-        if removed.is_empty() {
+        let mut indices = std::collections::BTreeSet::new();
+        for point in points {
+            // Only the frontmost annotation under each sampled point is erased.
+            // Lower layers stay until the next eraser pass.
+            if let Some(index) = self.objects.iter().rposition(|a| a.hit(*point, radius)) {
+                indices.insert(index);
+            }
+        }
+        if indices.is_empty() {
             return;
         }
+        let removed: Vec<_> = indices
+            .into_iter()
+            .map(|index| (index, self.objects[index].clone()))
+            .collect();
         for (i, _) in removed.iter().rev() {
             self.objects.remove(*i);
         }
@@ -484,6 +489,26 @@ mod tests {
         assert!(a.hit(Point::new(30., 11.), 2.));
         assert!(!a.hit(Point::new(30., 30.), 2.));
     }
+
+    #[test]
+    fn erase_removes_overlapping_annotations_one_layer_at_a_time() {
+        let mut d = Document::default();
+        d.add(line());
+        d.add(line());
+        assert_eq!(d.objects.len(), 2);
+
+        d.erase(&[Point::new(30., 10.)], 3.);
+        assert_eq!(d.objects.len(), 1, "only the frontmost layer is erased");
+
+        d.erase(&[Point::new(30., 10.)], 3.);
+        assert!(d.objects.is_empty(), "the next pass erases the lower layer");
+
+        d.undo();
+        assert_eq!(d.objects.len(), 1);
+        d.undo();
+        assert_eq!(d.objects.len(), 2);
+    }
+
     #[test]
     fn arrow_has_head() {
         let mut a = line();
