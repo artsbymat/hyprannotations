@@ -6,6 +6,11 @@ use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
 pub const WIDTH: f32 = 682.0;
 pub const HEIGHT: f32 = 88.0;
+pub const DESKTOP_PADDING: f32 = 8.0;
+pub const DESKTOP_PANEL_X: f32 = 542.0 - DESKTOP_PADDING;
+pub const DESKTOP_PANEL_Y: f32 = 16.0 - DESKTOP_PADDING;
+pub const DESKTOP_PANEL_WIDTH: f32 = 610.0 + 56.0 + DESKTOP_PADDING - DESKTOP_PANEL_X;
+pub const DESKTOP_PANEL_HEIGHT: f32 = 56.0 + DESKTOP_PADDING * 2.0;
 pub const PICKER_X: f32 = 19.0;
 pub const PICKER_Y: f32 = 94.0;
 pub const PICKER_COLS: usize = 24;
@@ -36,7 +41,76 @@ struct Button {
     action: Action,
     icon: &'static str,
 }
-fn buttons() -> Vec<Button> {
+/// Visible toolbar background. In desktop mode only the two remaining buttons
+/// and their padding are covered, so the rest of the surface is click-through.
+pub fn toolbar_background(app: &App) -> (f32, f32, f32, f32) {
+    if app.drawing {
+        (0., 0., WIDTH, HEIGHT)
+    } else {
+        (
+            DESKTOP_PANEL_X,
+            DESKTOP_PANEL_Y,
+            DESKTOP_PANEL_WIDTH,
+            DESKTOP_PANEL_HEIGHT,
+        )
+    }
+}
+
+pub fn inside_background(app: &App, x: f32, y: f32) -> bool {
+    let (bx, by, bw, bh) = toolbar_background(app);
+    (bx..bx + bw).contains(&x) && (by..by + bh).contains(&y)
+}
+
+/// Keep the visible background on screen. In desktop mode the compact panel is
+/// offset inside the surface, so the toolbar origin may become negative.
+pub fn clamp_toolbar_position(
+    app: &App,
+    position: [f32; 2],
+    surface_width: f32,
+    surface_height: f32,
+    scale: f32,
+) -> [f32; 2] {
+    let (bx, by, bw, bh) = toolbar_background(app);
+    let visible_height = if app.drawing { toolbar_height(app) } else { bh };
+    let min_x = -bx * scale;
+    let min_y = -by * scale;
+    let max_x = (surface_width - (bx + bw) * scale).max(min_x);
+    let max_y = (surface_height - (by + visible_height) * scale).max(min_y);
+    [
+        position[0].clamp(min_x, max_x),
+        position[1].clamp(min_y, max_y),
+    ]
+}
+
+pub fn toolbar_height(app: &App) -> f32 {
+    if app.drawing && app.color_picker {
+        PICKER_HEIGHT
+    } else {
+        HEIGHT
+    }
+}
+
+fn buttons(app: &App) -> Vec<Button> {
+    if !app.drawing {
+        return vec![
+            Button {
+                x: 542.,
+                y: 16.,
+                w: 56.,
+                h: 56.,
+                action: Action::Desktop,
+                icon: "desktop",
+            },
+            Button {
+                x: 610.,
+                y: 16.,
+                w: 56.,
+                h: 56.,
+                action: Action::Exit,
+                icon: "cross",
+            },
+        ];
+    }
     let mut buttons = vec![Button {
         x: 16.,
         y: 16.,
@@ -127,8 +201,8 @@ fn buttons() -> Vec<Button> {
     });
     buttons
 }
-pub fn hit(x: f32, y: f32) -> Option<Action> {
-    buttons()
+pub fn hit(app: &App, x: f32, y: f32) -> Option<Action> {
+    buttons(app)
         .iter()
         .find(|b| x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h)
         .map(|b| b.action)
@@ -196,10 +270,11 @@ fn lines(
 }
 pub fn draw(pix: &mut Pixmap, app: &App, x: f32, y: f32, scale: f32) {
     let t = Transform::from_scale(scale, scale).post_translate(x * scale, y * scale);
-    if let Some(path) = rounded(0., 0., WIDTH, HEIGHT, 12.) {
+    let (bx, by, bw, bh) = toolbar_background(app);
+    if let Some(path) = rounded(bx, by, bw, bh, 12.) {
         pix.fill_path(&path, &paint([6, 14, 18, 245]), FillRule::Winding, t, None);
     }
-    for b in buttons() {
+    for b in buttons(app) {
         let enabled = enabled(b.action, app);
         let selected = matches!(b.action,Action::Tool(tool) if app.tool==tool && app.drawing)
             || (b.action == Action::Fill && app.supports_fill() && app.filled)
@@ -233,6 +308,8 @@ pub fn draw(pix: &mut Pixmap, app: &App, x: f32, y: f32, scale: f32) {
         }
         let color = if !enabled {
             [72, 84, 91, 255]
+        } else if matches!(b.action, Action::Desktop | Action::Exit) {
+            [155, 238, 189, 255]
         } else if b.x < 320. {
             [255, 241, 177, 255]
         } else if b.x < 530. {
@@ -521,7 +598,8 @@ mod tests {
 
     #[test]
     fn desktop_and_exit_buttons_have_equal_size() {
-        let buttons = buttons();
+        let app = App::new(crate::config::Settings::default());
+        let buttons = buttons(&app);
         let desktop = buttons
             .iter()
             .find(|button| button.action == Action::Desktop)
@@ -532,6 +610,54 @@ mod tests {
             .expect("exit button");
         assert_eq!((desktop.w, desktop.h), (exit.w, exit.h));
         assert!(exit.x + exit.w <= WIDTH);
+    }
+
+    #[test]
+    fn desktop_mode_only_keeps_desktop_and_exit() {
+        let mut app = App::new(crate::config::Settings::default());
+        app.drawing = false;
+        let actions: Vec<_> = buttons(&app).iter().map(|button| button.action).collect();
+        assert_eq!(actions, vec![Action::Desktop, Action::Exit]);
+        assert_eq!(toolbar_background(&app).2, DESKTOP_PANEL_WIDTH);
+        assert_eq!(toolbar_height(&app), HEIGHT);
+        // Buttons keep their drawing-mode positions.
+        assert!(hit(&app, 542., 16.) == Some(Action::Desktop));
+        assert!(hit(&app, 610., 16.) == Some(Action::Exit));
+        // Only the padding around the buttons stays interactive for dragging.
+        assert!(inside_background(
+            &app,
+            DESKTOP_PANEL_X + 1.,
+            DESKTOP_PANEL_Y + 1.
+        ));
+        assert!(inside_background(&app, 534., 16.));
+        assert!(!inside_background(&app, 160., 40.));
+        assert!(!inside_background(&app, 533., 40.));
+        assert!(!inside_background(&app, 674., 40.));
+    }
+
+    #[test]
+    fn desktop_mode_can_reach_the_left_screen_edge() {
+        let mut app = App::new(crate::config::Settings::default());
+        app.drawing = false;
+        let [x, y] = clamp_toolbar_position(&app, [-1000., -1000.], 1920., 1080., 1.);
+        assert_eq!(x, -DESKTOP_PANEL_X);
+        assert_eq!(y, -DESKTOP_PANEL_Y);
+        // The visible panel now starts at the screen origin.
+        assert_eq!(x + DESKTOP_PANEL_X, 0.);
+        assert_eq!(y + DESKTOP_PANEL_Y, 0.);
+    }
+
+    #[test]
+    fn returning_to_drawing_mode_shifts_the_toolbar_right() {
+        let mut app = App::new(crate::config::Settings::default());
+        app.drawing = false;
+        let desktop_position = clamp_toolbar_position(&app, [-1000., 40.], 1920., 1080., 1.);
+
+        app.drawing = true;
+        let drawing_position = clamp_toolbar_position(&app, desktop_position, 1920., 1080., 1.);
+
+        assert_eq!(drawing_position[0], 0.);
+        assert!(drawing_position[0] > desktop_position[0]);
     }
 
     #[test]

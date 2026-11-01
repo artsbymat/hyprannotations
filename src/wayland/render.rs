@@ -4,21 +4,14 @@ impl State {
     pub(super) fn toolbar(&self, index: usize) -> (f32, f32, f32) {
         let v = &self.views[index];
         let scale = ((v.width as f32 - 8.) / ui::WIDTH).clamp(0.2, 1.0);
-        (
-            self.app.settings.toolbar_position[0]
-                .clamp(0., (v.width as f32 - ui::WIDTH * scale).max(0.)),
-            self.app.settings.toolbar_position[1].clamp(
-                0.,
-                (v.height as f32
-                    - if self.app.color_picker {
-                        ui::PICKER_HEIGHT
-                    } else {
-                        ui::HEIGHT
-                    } * scale)
-                    .max(0.),
-            ),
+        let [x, y] = ui::clamp_toolbar_position(
+            &self.app,
+            self.app.settings.toolbar_position,
+            v.width as f32,
+            v.height as f32,
             scale,
-        )
+        );
+        (x, y, scale)
     }
 }
 
@@ -149,13 +142,14 @@ impl State {
                 .set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
         } else {
             let region = smithay_client_toolkit::compositor::Region::new(&self.compositor)?;
+            let (bx, by, bw, bh) = ui::toolbar_background(&self.app);
             region.add(
-                x.floor() as i32,
-                y.floor() as i32,
-                (ui::WIDTH * scale).ceil() as i32,
-                (ui::HEIGHT * scale).ceil() as i32,
+                (x + bx * scale).floor() as i32,
+                (y + by * scale).floor() as i32,
+                (bw * scale).ceil() as i32,
+                (bh * scale).ceil() as i32,
             );
-            if self.app.color_picker {
+            if self.app.drawing && self.app.color_picker {
                 region.add(
                     (x + ui::PICKER_X * scale).floor() as i32,
                     (y + ui::PICKER_Y * scale).floor() as i32,

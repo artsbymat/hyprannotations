@@ -160,7 +160,7 @@ impl PointerHandler for State {
                     self.finish_gesture(index);
                 }
                 Press { button: 0x111, .. } => {
-                    if let Some(Action::Color(slot)) = ui::hit(ux, uy) {
+                    if let Some(Action::Color(slot)) = ui::hit(&self.app, ux, uy) {
                         self.app.select_color(slot);
                         self.app.color_picker = true;
                         self.dirty_all();
@@ -168,7 +168,8 @@ impl PointerHandler for State {
                 }
                 Press { button: 0x110, .. } => {
                     self.focused = Some(index);
-                    if self.app.color_picker
+                    if self.app.drawing
+                        && self.app.color_picker
                         && let Some(color) = ui::picker_color(ux, uy)
                     {
                         self.app.replace_color(color);
@@ -177,12 +178,13 @@ impl PointerHandler for State {
                         self.dirty_all();
                         continue;
                     }
-                    if (0.0..ui::WIDTH).contains(&ux) && (0.0..ui::HEIGHT).contains(&uy) {
-                        if let Some(action) = ui::hit(ux, uy) {
+                    if ui::inside_background(&self.app, ux, uy) {
+                        if let Some(action) = ui::hit(&self.app, ux, uy) {
                             self.action(index, action);
                             self.update_cursor(index, p);
                         } else {
-                            self.drag_origin = Some((p, self.app.settings.toolbar_position));
+                            let (x, y, _) = self.toolbar(index);
+                            self.drag_origin = Some((p, [x, y]));
                             self.update_cursor(index, p);
                         }
                         continue;
@@ -202,8 +204,15 @@ impl PointerHandler for State {
                 Motion { .. } => {
                     self.update_cursor(index, p);
                     if let Some((origin, pos)) = self.drag_origin {
-                        self.app.settings.toolbar_position =
-                            [pos[0] + p.x - origin.x, pos[1] + p.y - origin.y];
+                        let (_, _, scale) = self.toolbar(index);
+                        let view = &self.views[index];
+                        self.app.settings.toolbar_position = ui::clamp_toolbar_position(
+                            &self.app,
+                            [pos[0] + p.x - origin.x, pos[1] + p.y - origin.y],
+                            view.width as f32,
+                            view.height as f32,
+                            scale,
+                        );
                         self.dirty_all();
                         self.update_cursor(index, p);
                         continue;
@@ -246,11 +255,10 @@ impl State {
             let (toolbar_x, toolbar_y, toolbar_scale) = self.toolbar(index);
             let ui_x = (point.x - toolbar_x) / toolbar_scale;
             let ui_y = (point.y - toolbar_y) / toolbar_scale;
-            let over_toolbar =
-                (0.0..ui::WIDTH).contains(&ui_x) && (0.0..ui::HEIGHT).contains(&ui_y);
+            let over_toolbar = ui::inside_background(&self.app, ui_x, ui_y);
 
             if over_toolbar {
-                match ui::hit(ui_x, ui_y) {
+                match ui::hit(&self.app, ui_x, ui_y) {
                     None => Shape::Grab,
                     Some(action) if !ui::enabled(action, &self.app) => Shape::NotAllowed,
                     Some(_) => Shape::Default,

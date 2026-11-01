@@ -168,7 +168,10 @@ pub fn run(probe: bool, smoke_test: bool) -> Result<()> {
         {
             check_pointer_release = state.pointer_position.is_some_and(|(index, p)| {
                 let (x, y, scale) = state.toolbar(index);
-                p.x < x || p.y < y || p.x > x + ui::WIDTH * scale || p.y > y + ui::HEIGHT * scale
+                p.x < x
+                    || p.y < y
+                    || p.x > x + ui::WIDTH * scale
+                    || p.y > y + ui::toolbar_height(&state.app) * scale
             });
             state.action(0, Action::Desktop);
             smoke_phase = 1;
