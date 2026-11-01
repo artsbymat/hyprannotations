@@ -14,6 +14,7 @@ pub struct App {
     pub exit: bool,
     pub color_picker: bool,
     pub help_visible: bool,
+    pub auto_number: bool,
 }
 impl App {
     pub fn supports_fill(&self) -> bool {
@@ -38,6 +39,7 @@ impl App {
             exit: false,
             color_picker: false,
             help_visible: false,
+            auto_number: false,
         }
     }
     pub fn load_palette(&mut self) {
@@ -91,6 +93,7 @@ impl App {
             text: String::new(),
             font_size: self.settings.font_size,
             image: None,
+            number: None,
         }
     }
 }

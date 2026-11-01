@@ -412,12 +412,16 @@ impl State {
                 text: String::new(),
                 font_size: 12.0,
                 image: Some(std::sync::Arc::new(pixels)),
+                number: None,
             })
         })();
 
         match result {
-            Ok(annotation) => {
+            Ok(mut annotation) => {
                 let view = &mut self.views[index];
+                if self.app.auto_number {
+                    annotation.number = Some(view.session.document.next_number());
+                }
                 view.session.document.add(annotation);
                 view.session.selected = view.session.document.objects.len().checked_sub(1);
                 view.dirty = true;
@@ -481,6 +485,7 @@ impl State {
                     draft.color = self.app.color;
                 }
             }
+            Action::Numbering => self.app.auto_number = !self.app.auto_number,
             Action::Undo => self.views[index].session.document.undo(),
             Action::Redo => self.views[index].session.document.redo(),
             Action::Clear => self.views[index].session.document.clear(),

@@ -251,8 +251,11 @@ impl Session {
             v.erase_points.clear();
         }
         if v.draft.as_ref().is_some_and(|a| a.tool != Tool::Text)
-            && let Some(a) = v.draft.take()
+            && let Some(mut a) = v.draft.take()
         {
+            if app.auto_number {
+                a.number = Some(v.document.next_number());
+            }
             v.document.add(a);
         }
     }
@@ -326,6 +329,7 @@ mod tests {
             text: String::new(),
             font_size: 12.,
             image: Some(std::sync::Arc::new(tiny_skia::Pixmap::new(2, 1).unwrap())),
+            number: None,
         });
         session.selected = Some(0);
         session.begin(&app, Point::new(110., 60.));
@@ -374,6 +378,36 @@ mod tests {
     }
 
     #[test]
+    fn automatic_numbering_skips_text_and_restarts_after_clear() {
+        let mut app = App::new(Settings::default());
+        app.auto_number = true;
+        let mut session = Session::default();
+
+        app.tool = Tool::Pen;
+        session.begin(&app, Point::new(20., 20.));
+        session.finish(&app);
+        assert_eq!(session.document.objects[0].number, Some(1));
+
+        app.tool = Tool::Text;
+        session.begin(&app, Point::new(30., 30.));
+        session.finish(&app);
+        assert_eq!(session.draft.as_ref().unwrap().number, None);
+        session.draft = None;
+
+        app.tool = Tool::Rectangle;
+        session.begin(&app, Point::new(40., 40.));
+        session.motion(&app, Point::new(80., 80.));
+        session.finish(&app);
+        assert_eq!(session.document.objects[1].number, Some(2));
+
+        session.document.clear();
+        session.begin(&app, Point::new(50., 50.));
+        session.motion(&app, Point::new(90., 90.));
+        session.finish(&app);
+        assert_eq!(session.document.objects[0].number, Some(1));
+    }
+
+    #[test]
     fn pointer_trail_is_temporary_and_not_added_to_history() {
         let mut app = App::new(Settings::default());
         app.tool = Tool::Pointer;
@@ -403,6 +437,7 @@ mod tests {
             text: "Baris 1\nBaris 2".into(),
             font_size: 20.,
             image: None,
+            number: None,
         });
         // Select tool clicking on line 2 (y in [38, 66])
         app.tool = Tool::Select;

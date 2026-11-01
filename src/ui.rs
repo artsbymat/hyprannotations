@@ -53,6 +53,7 @@ pub enum Action {
     Picker,
     Width,
     Fill,
+    Numbering,
     Undo,
     Redo,
     Clear,
@@ -194,17 +195,14 @@ fn buttons(app: &App) -> Vec<Button> {
         (Action::Undo, "undo"),
         (Action::Redo, "redo"),
         (Action::Clear, "trash"),
+        (Action::Numbering, "number"),
     ]
     .into_iter()
     .enumerate()
     {
         buttons.push(Button {
             x: 430. + (i / 2) as f32 * 34.,
-            y: if i == 4 {
-                31.
-            } else {
-                16. + (i % 2) as f32 * 30.
-            },
+            y: 16. + (i % 2) as f32 * 30.,
             w: 28.,
             h: 26.,
             action,
@@ -359,6 +357,7 @@ pub fn help_text(width: f32, height: f32) -> Vec<Annotation> {
         text: text.into(),
         font_size,
         image: None,
+        number: None,
     };
     let mut text = vec![
         annotation(
@@ -456,6 +455,7 @@ pub fn draw(pix: &mut Pixmap, app: &App, x: f32, y: f32, scale: f32) {
         let enabled = enabled(b.action, app);
         let selected = matches!(b.action,Action::Tool(tool) if app.tool==tool && app.drawing)
             || (b.action == Action::Fill && app.supports_fill() && app.filled)
+            || (b.action == Action::Numbering && app.auto_number)
             || matches!(b.action,Action::Color(i) if i==app.palette.selected)
             || (b.action == Action::Desktop && !app.drawing);
         let fill = match b.action {
@@ -627,6 +627,21 @@ pub fn draw(pix: &mut Pixmap, app: &App, x: f32, y: f32, scale: f32) {
                 it,
                 true,
             ),
+            "number" => {
+                if let Some(circle) = PathBuilder::from_circle(0., 0., 7.) {
+                    pix.stroke_path(
+                        &circle,
+                        &paint(color),
+                        &Stroke {
+                            width: 1.5,
+                            ..Stroke::default()
+                        },
+                        it,
+                        None,
+                    );
+                }
+                lines(pix, &[(0., -4.), (0., 4.)], color, 1.5, it, false);
+            }
             "rect" => {
                 lines(
                     pix,
@@ -647,6 +662,7 @@ pub fn draw(pix: &mut Pixmap, app: &App, x: f32, y: f32, scale: f32) {
                     text: String::new(),
                     font_size: 10.,
                     image: None,
+                    number: None,
                 };
                 a.render_shape(pix, it);
             }

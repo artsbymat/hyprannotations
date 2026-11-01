@@ -75,6 +75,7 @@ impl State {
                         text: String::new(),
                         font_size: 12.,
                         image: None,
+                        number: None,
                     };
                     self.renderer.draw(pix, &marker, v.scale);
                     if matches!(a.tool, Tool::Rectangle | Tool::Ellipse | Tool::Image) {
@@ -96,6 +97,7 @@ impl State {
                                 text: String::new(),
                                 font_size: 12.,
                                 image: None,
+                                number: None,
                             };
                             self.renderer.draw(pix, &handle, v.scale);
                         }

@@ -61,8 +61,18 @@ pub struct Annotation {
     pub text: String,
     pub font_size: f32,
     pub image: Option<std::sync::Arc<Pixmap>>,
+    pub number: Option<u32>,
 }
 impl Annotation {
+    pub fn number_badge_center(&self) -> Option<Point> {
+        self.number?;
+        let bounds = self.bounds()?;
+        Some(Point::new(
+            (bounds.left() - 8.0).max(14.0),
+            (bounds.top() - 8.0).max(14.0),
+        ))
+    }
+
     /// Black or white foreground that stays legible on top of this annotation's
     /// fill color. Only used for text backgrounds.
     pub fn contrasting_text_color(&self) -> [u8; 4] {
@@ -161,6 +171,12 @@ impl Annotation {
         }
     }
     pub fn hit(&self, point: Point, radius: f32) -> bool {
+        if self
+            .number_badge_center()
+            .is_some_and(|center| center.distance(point) <= 13.0 + radius)
+        {
+            return true;
+        }
         if self.tool == Tool::Image {
             return self.bounds().is_some_and(|bounds| {
                 point.x >= bounds.left() - radius
@@ -268,6 +284,15 @@ pub struct Document {
     redo: Vec<Command>,
 }
 impl Document {
+    pub fn next_number(&self) -> u32 {
+        self.objects
+            .iter()
+            .filter_map(|annotation| annotation.number)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+    }
+
     pub fn add(&mut self, annotation: Annotation) {
         self.objects.push(annotation.clone());
         self.undo.push(Command::Add(annotation));
@@ -393,10 +418,57 @@ impl Renderer {
     }
     pub fn draw(&mut self, pix: &mut Pixmap, annotation: &Annotation, scale: f32) {
         self.draw_internal(pix, annotation, scale, false);
+        self.draw_number_badge(pix, annotation, scale);
     }
 
     pub fn draw_editing(&mut self, pix: &mut Pixmap, annotation: &Annotation, scale: f32) {
         self.draw_internal(pix, annotation, scale, true);
+    }
+
+    fn draw_number_badge(&mut self, pix: &mut Pixmap, annotation: &Annotation, scale: f32) {
+        let (Some(number), Some(center)) = (annotation.number, annotation.number_badge_center())
+        else {
+            return;
+        };
+        if let Some(circle) = PathBuilder::from_circle(center.x, center.y, 13.0) {
+            let mut background = Paint::default();
+            background.set_color_rgba8(255, 241, 177, 255);
+            pix.fill_path(
+                &circle,
+                &background,
+                FillRule::Winding,
+                Transform::from_scale(scale, scale),
+                None,
+            );
+            let mut outline = Paint::default();
+            outline.set_color_rgba8(48, 81, 99, 255);
+            pix.stroke_path(
+                &circle,
+                &outline,
+                &Stroke {
+                    width: 1.5,
+                    ..Stroke::default()
+                },
+                Transform::from_scale(scale, scale),
+                None,
+            );
+        }
+        let value = number.to_string();
+        let label = Annotation {
+            tool: Tool::Text,
+            points: vec![Point::new(
+                center.x - value.chars().count() as f32 * 4.2,
+                center.y - 9.0,
+            )],
+            color: [6, 14, 18, 255],
+            width: 1.0,
+            filled: false,
+            text: value,
+            font_size: 14.0,
+            image: None,
+            number: None,
+        };
+        self.draw_internal(pix, &label, scale, false);
     }
 
     fn draw_internal(
@@ -610,6 +682,7 @@ mod tests {
             text: String::new(),
             font_size: 28.,
             image: None,
+            number: None,
         }
     }
     #[test]
@@ -651,6 +724,7 @@ mod tests {
             text: String::new(),
             font_size: 12.,
             image: Some(std::sync::Arc::new(source)),
+            number: None,
         };
         assert!(image.hit(Point::new(20., 20.), 0.));
         assert!(!image.hit(Point::new(40., 40.), 0.));
@@ -709,6 +783,7 @@ mod tests {
             text: String::new(),
             font_size: 20.,
             image: None,
+            number: None,
         };
         let mut renderer = Renderer::new();
         let mut hidden = Pixmap::new(64, 64).unwrap();
@@ -731,6 +806,7 @@ mod tests {
             text: "abc\n".into(),
             font_size: 20.,
             image: None,
+            number: None,
         };
         let mut pixmap = Pixmap::new(100, 80).unwrap();
         Renderer::new().draw_editing(&mut pixmap, &annotation, 1.);
@@ -755,6 +831,7 @@ mod tests {
                 text: format!("abc{}", "\n".repeat(newlines)),
                 font_size: 20.,
                 image: None,
+                number: None,
             };
             let mut pixmap = Pixmap::new(100, 200).unwrap();
             Renderer::new().draw_editing(&mut pixmap, &annotation, 1.);
@@ -787,6 +864,7 @@ mod tests {
             text: "hello".into(),
             font_size: 20.,
             image: None,
+            number: None,
         };
         assert_eq!(annotation.contrasting_text_color(), [0, 0, 0, 255]);
         annotation.color = [0, 0, 0, 255];
@@ -804,6 +882,7 @@ mod tests {
             text: "hello".into(),
             font_size: 20.,
             image: None,
+            number: None,
         };
         let mut pixmap = Pixmap::new(160, 100).unwrap();
         Renderer::new().draw(&mut pixmap, &annotation, 1.);
@@ -833,6 +912,7 @@ mod tests {
             text: "hi".into(),
             font_size: 20.,
             image: None,
+            number: None,
         };
         let mut pixmap = Pixmap::new(140, 100).unwrap();
         Renderer::new().draw(&mut pixmap, &annotation, 1.);
@@ -855,6 +935,7 @@ mod tests {
             text: "hi\n".into(),
             font_size: 20.,
             image: None,
+            number: None,
         };
         let mut pixmap = Pixmap::new(140, 140).unwrap();
         Renderer::new().draw_editing(&mut pixmap, &annotation, 1.);
@@ -876,6 +957,7 @@ mod tests {
             text: "Baris 1\nBaris 2 panjang".into(),
             font_size: 20.,
             image: None,
+            number: None,
         };
         let bounds = annotation.bounds().expect("text should have bounds");
         assert_eq!(bounds.left(), 10.);
@@ -895,6 +977,7 @@ mod tests {
             text: "Baris 1\nBaris 2".into(),
             font_size: 20.,
             image: None,
+            number: None,
         };
         // Line 1: y in [20, 48]. Test at y = 30.
         assert!(annotation.hit(Point::new(20., 30.), 5.));
@@ -917,6 +1000,7 @@ mod tests {
             text: "Baris 1\nBaris 2 panjang".into(),
             font_size: 20.,
             image: None,
+            number: None,
         };
         let bounds = annotation.bounds().unwrap();
         // Point in the padding / blank area of the first short line

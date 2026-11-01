@@ -9,6 +9,7 @@ Draw, highlight, and write text directly on top of your desktop windows in real 
 - **Low Latency & Minimal Footprint**: Pure 2D rasterization using `tiny-skia` on Wayland shared memory (SHM) buffers.
 - **Multi-Monitor Aware**: Renders independent per-output overlays respecting display scaling and rotation.
 - **Desktop Pass-Through Mode**: Toggle drawing on/off instantly with `Tab` without clearing your annotations.
+- **Automatic Numbering**: Add linked numbered badges to new annotations from a toolbar toggle.
 
 ---
 
@@ -90,6 +91,7 @@ bind = SUPER SHIFT, A, exec, hyprannotations
 - Click any of the **6 palette slots** in the toolbar to activate that color.
 - Click the large active color indicator (or right-click a slot) to open the color picker.
 - Palette selections and custom colors automatically persist in `~/.config/screen-annotation/palette.toml`.
+- Toggle the circled `1` button to automatically number new annotations. Text, eraser, select, and laser pointer are excluded.
 
 ---
 
