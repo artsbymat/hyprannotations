@@ -2,7 +2,8 @@ mod session;
 use serde::{Deserialize, Serialize};
 pub use session::Session;
 use tiny_skia::{
-    Color, FillRule, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, Stroke, Transform,
+    Color, FillRule, FilterQuality, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap,
+    PixmapPaint, Stroke, Transform,
 };
 
 fn rounded_rect(x: f32, y: f32, w: f32, h: f32, radius: f32) -> Option<Path> {
@@ -35,6 +36,7 @@ pub enum Tool {
     Text,
     Pointer,
     Select,
+    Image,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Point {
@@ -58,6 +60,7 @@ pub struct Annotation {
     pub filled: bool,
     pub text: String,
     pub font_size: f32,
+    pub image: Option<std::sync::Arc<Pixmap>>,
 }
 impl Annotation {
     /// Black or white foreground that stays legible on top of this annotation's
@@ -122,7 +125,16 @@ impl Annotation {
         p.finish()
     }
     pub fn bounds(&self) -> Option<tiny_skia::Rect> {
-        if self.tool == Tool::Text {
+        if self.tool == Tool::Image {
+            let first = *self.points.first()?;
+            let last = *self.points.last()?;
+            tiny_skia::Rect::from_xywh(
+                first.x.min(last.x),
+                first.y.min(last.y),
+                (last.x - first.x).abs().max(0.1),
+                (last.y - first.y).abs().max(0.1),
+            )
+        } else if self.tool == Tool::Text {
             let p = self.points.first()?;
             let line_height = self.font_size * 1.4;
             let lines: Vec<&str> = self.text.split('\n').collect();
@@ -149,6 +161,14 @@ impl Annotation {
         }
     }
     pub fn hit(&self, point: Point, radius: f32) -> bool {
+        if self.tool == Tool::Image {
+            return self.bounds().is_some_and(|bounds| {
+                point.x >= bounds.left() - radius
+                    && point.x <= bounds.right() + radius
+                    && point.y >= bounds.top() - radius
+                    && point.y <= bounds.bottom() + radius
+            });
+        }
         if self.tool == Tool::Text {
             if self.filled
                 && let Some(bounds) = self.bounds()
@@ -187,6 +207,29 @@ impl Annotation {
         pix.pixels().iter().any(|p| p.alpha() != 0)
     }
     pub fn render_shape(&self, pix: &mut Pixmap, transform: Transform) {
+        if self.tool == Tool::Image {
+            let (Some(image), Some(bounds)) = (&self.image, self.bounds()) else {
+                return;
+            };
+            let image_transform = Transform::from_scale(
+                bounds.width() / image.width() as f32,
+                bounds.height() / image.height() as f32,
+            )
+            .post_translate(bounds.left(), bounds.top())
+            .post_concat(transform);
+            pix.draw_pixmap(
+                0,
+                0,
+                image.as_ref().as_ref(),
+                &PixmapPaint {
+                    quality: FilterQuality::Bicubic,
+                    ..PixmapPaint::default()
+                },
+                image_transform,
+                None,
+            );
+            return;
+        }
         let Some(path) = self.path() else {
             return;
         };
@@ -545,6 +588,7 @@ mod tests {
             filled: false,
             text: String::new(),
             font_size: 28.,
+            image: None,
         }
     }
     #[test]
@@ -571,6 +615,40 @@ mod tests {
         let a = line();
         assert!(a.hit(Point::new(30., 11.), 2.));
         assert!(!a.hit(Point::new(30., 30.), 2.));
+    }
+
+    #[test]
+    fn pasted_image_renders_and_participates_in_history() {
+        let mut source = Pixmap::new(2, 2).unwrap();
+        source.fill(Color::from_rgba8(255, 0, 0, 255));
+        let image = Annotation {
+            tool: Tool::Image,
+            points: vec![Point::new(10., 10.), Point::new(30., 30.)],
+            color: [255; 4],
+            width: 1.,
+            filled: false,
+            text: String::new(),
+            font_size: 12.,
+            image: Some(std::sync::Arc::new(source)),
+        };
+        assert!(image.hit(Point::new(20., 20.), 0.));
+        assert!(!image.hit(Point::new(40., 40.), 0.));
+
+        let mut output = Pixmap::new(50, 50).unwrap();
+        Renderer::new().draw(&mut output, &image, 1.);
+        assert_ne!(output.pixel(20, 20).unwrap().alpha(), 0);
+
+        let mut document = Document::default();
+        document.add(image);
+        document.translate(0, Point::new(5., 7.));
+        document.record_move(0, Point::new(5., 7.));
+        assert_eq!(document.objects[0].bounds().unwrap().left(), 15.);
+        document.undo();
+        assert_eq!(document.objects[0].bounds().unwrap().left(), 10.);
+        document.undo();
+        assert!(document.objects.is_empty());
+        document.redo();
+        assert_eq!(document.objects.len(), 1);
     }
 
     #[test]
@@ -609,6 +687,7 @@ mod tests {
             filled: false,
             text: String::new(),
             font_size: 20.,
+            image: None,
         };
         let mut renderer = Renderer::new();
         let mut hidden = Pixmap::new(64, 64).unwrap();
@@ -630,6 +709,7 @@ mod tests {
             filled: false,
             text: "abc\n".into(),
             font_size: 20.,
+            image: None,
         };
         let mut pixmap = Pixmap::new(100, 80).unwrap();
         Renderer::new().draw_editing(&mut pixmap, &annotation, 1.);
@@ -653,6 +733,7 @@ mod tests {
                 filled: false,
                 text: format!("abc{}", "\n".repeat(newlines)),
                 font_size: 20.,
+                image: None,
             };
             let mut pixmap = Pixmap::new(100, 200).unwrap();
             Renderer::new().draw_editing(&mut pixmap, &annotation, 1.);
@@ -684,6 +765,7 @@ mod tests {
             filled: true,
             text: "hello".into(),
             font_size: 20.,
+            image: None,
         };
         assert_eq!(annotation.contrasting_text_color(), [0, 0, 0, 255]);
         annotation.color = [0, 0, 0, 255];
@@ -700,6 +782,7 @@ mod tests {
             filled: true,
             text: "hello".into(),
             font_size: 20.,
+            image: None,
         };
         let mut pixmap = Pixmap::new(160, 100).unwrap();
         Renderer::new().draw(&mut pixmap, &annotation, 1.);
@@ -728,6 +811,7 @@ mod tests {
             filled: true,
             text: "hi".into(),
             font_size: 20.,
+            image: None,
         };
         let mut pixmap = Pixmap::new(140, 100).unwrap();
         Renderer::new().draw(&mut pixmap, &annotation, 1.);
@@ -749,6 +833,7 @@ mod tests {
             filled: true,
             text: "hi\n".into(),
             font_size: 20.,
+            image: None,
         };
         let mut pixmap = Pixmap::new(140, 140).unwrap();
         Renderer::new().draw_editing(&mut pixmap, &annotation, 1.);
@@ -769,6 +854,7 @@ mod tests {
             filled: false,
             text: "Baris 1\nBaris 2 panjang".into(),
             font_size: 20.,
+            image: None,
         };
         let bounds = annotation.bounds().expect("text should have bounds");
         assert_eq!(bounds.left(), 10.);
@@ -787,6 +873,7 @@ mod tests {
             filled: false,
             text: "Baris 1\nBaris 2".into(),
             font_size: 20.,
+            image: None,
         };
         // Line 1: y in [20, 48]. Test at y = 30.
         assert!(annotation.hit(Point::new(20., 30.), 5.));
@@ -808,6 +895,7 @@ mod tests {
             filled: true,
             text: "Baris 1\nBaris 2 panjang".into(),
             font_size: 20.,
+            image: None,
         };
         let bounds = annotation.bounds().unwrap();
         // Point in the padding / blank area of the first short line

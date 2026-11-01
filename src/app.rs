@@ -90,6 +90,7 @@ impl App {
             filled: self.supports_fill() && self.filled,
             text: String::new(),
             font_size: self.settings.font_size,
+            image: None,
         }
     }
 }

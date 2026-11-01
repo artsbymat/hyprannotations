@@ -286,6 +286,142 @@ impl State {
         device.set_shape(serial, shape);
     }
 
+    fn request_screenshot(&mut self, index: usize) {
+        if self.screenshot.is_some() {
+            return;
+        }
+        self.commit_text(index);
+        self.finish_gesture(index);
+        self.screenshot = Some(ScreenshotRequest {
+            view: index,
+            stage: ScreenshotStage::HidingToolbar,
+        });
+        self.views[index].dirty = true;
+    }
+
+    pub(super) fn capture_ready_screenshot(&mut self) {
+        let Some(request) = self.screenshot.as_ref() else {
+            return;
+        };
+        if request.stage != ScreenshotStage::Ready {
+            return;
+        }
+        let view_index = request.view;
+        let result = self.capture_output_to_clipboard(view_index);
+        self.screenshot = None;
+        if let Some(view) = self.views.get_mut(view_index) {
+            view.dirty = true;
+        }
+        match result {
+            Ok(()) => eprintln!("Screenshot copied to clipboard"),
+            Err(error) => eprintln!("Copy screenshot: {error}"),
+        }
+    }
+
+    fn capture_output_to_clipboard(&mut self, index: usize) -> anyhow::Result<()> {
+        let view = self
+            .views
+            .get(index)
+            .context("Screenshot output disappeared")?;
+        let output_name = self
+            .output_state
+            .info(&view.output)
+            .and_then(|info| info.name)
+            .context("Compositor did not provide the output name")?;
+        let screenshot = std::process::Command::new("grim")
+            .args(["-t", "ppm", "-o", &output_name, "-"])
+            .output()
+            .context("Could not run grim; install grim to use Ctrl+C screenshots")?;
+        anyhow::ensure!(
+            screenshot.status.success(),
+            "grim failed: {}",
+            String::from_utf8_lossy(&screenshot.stderr).trim()
+        );
+        let (width, height, rgba) = decode_ppm(&screenshot.stdout)?;
+        let mut clipboard = arboard::Clipboard::new()
+            .map_err(|error| anyhow::anyhow!("Cannot access clipboard: {error}"))?;
+        clipboard
+            .set_image(arboard::ImageData {
+                width,
+                height,
+                bytes: std::borrow::Cow::Owned(rgba),
+            })
+            .map_err(|error| anyhow::anyhow!("Cannot copy screenshot: {error}"))?;
+        // Keep the Wayland selection owner alive so other apps can paste the image.
+        self.clipboard = Some(clipboard);
+        Ok(())
+    }
+
+    fn paste_clipboard_image(&mut self, index: usize) {
+        self.commit_text(index);
+        let result = (|| -> anyhow::Result<Annotation> {
+            let mut clipboard = arboard::Clipboard::new()
+                .map_err(|error| anyhow::anyhow!("Cannot access clipboard: {error}"))?;
+            let image = clipboard.get_image().map_err(|error| {
+                anyhow::anyhow!("Clipboard does not contain a supported image: {error}")
+            })?;
+            let image_width = u32::try_from(image.width)?;
+            let image_height = u32::try_from(image.height)?;
+            let expected = image
+                .width
+                .checked_mul(image.height)
+                .and_then(|pixels| pixels.checked_mul(4))
+                .context("Clipboard image is too large")?;
+            anyhow::ensure!(
+                image.bytes.len() == expected,
+                "Clipboard returned invalid image data"
+            );
+
+            let mut pixels = tiny_skia::Pixmap::new(image_width, image_height)
+                .context("Clipboard image dimensions are invalid or too large")?;
+            pixels.data_mut().copy_from_slice(&image.bytes);
+            // arboard returns straight-alpha RGBA; tiny-skia expects premultiplied RGBA.
+            for pixel in pixels.data_mut().as_chunks_mut::<4>().0 {
+                let alpha = pixel[3] as u16;
+                pixel[0] = ((pixel[0] as u16 * alpha + 127) / 255) as u8;
+                pixel[1] = ((pixel[1] as u16 * alpha + 127) / 255) as u8;
+                pixel[2] = ((pixel[2] as u16 * alpha + 127) / 255) as u8;
+            }
+
+            let view = &self.views[index];
+            let max_width = view.width as f32 * 0.7;
+            let max_height = view.height as f32 * 0.7;
+            let fit = (max_width / image_width as f32)
+                .min(max_height / image_height as f32)
+                .min(1.0);
+            let width = image_width as f32 * fit;
+            let height = image_height as f32 * fit;
+            let preferred = self
+                .pointer_position
+                .filter(|(view_index, _)| *view_index == index)
+                .map(|(_, point)| point)
+                .unwrap_or_else(|| Point::new(view.width as f32 / 2.0, view.height as f32 / 2.0));
+            let x = (preferred.x - width / 2.0).clamp(0.0, (view.width as f32 - width).max(0.0));
+            let y = (preferred.y - height / 2.0).clamp(0.0, (view.height as f32 - height).max(0.0));
+
+            Ok(Annotation {
+                tool: Tool::Image,
+                points: vec![Point::new(x, y), Point::new(x + width, y + height)],
+                color: [255, 255, 255, 255],
+                width: 1.0,
+                filled: false,
+                text: String::new(),
+                font_size: 12.0,
+                image: Some(std::sync::Arc::new(pixels)),
+            })
+        })();
+
+        match result {
+            Ok(annotation) => {
+                let view = &mut self.views[index];
+                view.session.document.add(annotation);
+                view.session.selected = view.session.document.objects.len().checked_sub(1);
+                view.dirty = true;
+            }
+            Err(error) => eprintln!("Paste image: {error}"),
+        }
+    }
+
     pub(super) fn commit_text(&mut self, index: usize) {
         let v = &mut self.views[index];
         if v.session
@@ -385,6 +521,24 @@ impl State {
                 self.app.help_visible = false;
                 self.dirty_all();
             }
+            return;
+        }
+        if self.modifiers.ctrl
+            && event
+                .keysym
+                .key_char()
+                .is_some_and(|key| key == 'v' || key == 'V')
+        {
+            self.paste_clipboard_image(index);
+            return;
+        }
+        if self.modifiers.ctrl
+            && event
+                .keysym
+                .key_char()
+                .is_some_and(|key| key == 'c' || key == 'C')
+        {
+            self.request_screenshot(index);
             return;
         }
         if self.views[index]

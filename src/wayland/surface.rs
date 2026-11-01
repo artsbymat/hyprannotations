@@ -33,12 +33,18 @@ impl CompositorHandler for State {
         surface: &wl_surface::WlSurface,
         _: u32,
     ) {
-        if let Some(v) = self
+        if let Some(index) = self
             .views
-            .iter_mut()
-            .find(|v| v.layer.wl_surface() == surface)
+            .iter()
+            .position(|view| view.layer.wl_surface() == surface)
         {
-            v.pending = false;
+            self.views[index].pending = false;
+            if let Some(request) = &mut self.screenshot
+                && request.view == index
+                && request.stage == ScreenshotStage::WaitingForFrame
+            {
+                request.stage = ScreenshotStage::Ready;
+            }
         }
     }
     fn surface_enter(

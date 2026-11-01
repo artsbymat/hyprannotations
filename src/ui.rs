@@ -20,7 +20,7 @@ pub const PICKER_WIDTH: f32 = PICKER_COLS as f32 * PICKER_CELL;
 pub const PICKER_HEIGHT: f32 = PICKER_Y + PICKER_ROWS as f32 * PICKER_CELL;
 pub const HELP_WIDTH: f32 = 700.0;
 pub const HELP_HEIGHT: f32 = 520.0;
-const HELP_ROW_HEIGHT: f32 = 34.0;
+const HELP_ROW_HEIGHT: f32 = 30.0;
 const HELP_TOOLS: &[(&str, &str)] = &[
     ("P", "Pen"),
     ("H", "Highlighter"),
@@ -34,6 +34,8 @@ const HELP_TOOLS: &[(&str, &str)] = &[
     ("V", "Select object"),
 ];
 const HELP_ACTIONS: &[(&str, &str)] = &[
+    ("Ctrl + C", "Copy screenshot"),
+    ("Ctrl + V", "Paste image"),
     ("Delete", "Delete selection"),
     ("Ctrl + Z", "Undo"),
     ("Ctrl + Shift + Z", "Redo"),
@@ -319,7 +321,7 @@ pub fn draw_help_background(pix: &mut Pixmap, width: f32, height: f32, scale: f3
             let key_x = card_x + 16.0;
             let key_y = card_y + 48.0 + row as f32 * HELP_ROW_HEIGHT;
             let key_width = if column == 0 { 72.0 } else { 130.0 };
-            if let Some(path) = rounded(key_x, key_y, key_width, 25.0, 6.0) {
+            if let Some(path) = rounded(key_x, key_y, key_width, 23.0, 6.0) {
                 pix.fill_path(
                     &path,
                     &paint([25, 48, 57, 255]),
@@ -356,6 +358,7 @@ pub fn help_text(width: f32, height: f32) -> Vec<Annotation> {
         filled: false,
         text: text.into(),
         font_size,
+        image: None,
     };
     let mut text = vec![
         annotation(
@@ -643,6 +646,7 @@ pub fn draw(pix: &mut Pixmap, app: &App, x: f32, y: f32, scale: f32) {
                     filled: false,
                     text: String::new(),
                     font_size: 10.,
+                    image: None,
                 };
                 a.render_shape(pix, it);
             }

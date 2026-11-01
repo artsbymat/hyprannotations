@@ -20,15 +20,15 @@ You need standard build tools, Rust (edition 2024), and Wayland development libr
 
 - **Arch Linux**:
   ```sh
-  sudo pacman -S base-devel wayland libxkbcommon
+  sudo pacman -S base-devel wayland libxkbcommon grim
   ```
 - **Ubuntu / Debian**:
   ```sh
-  sudo apt-get install build-essential pkg-config libwayland-dev libxkbcommon-dev
+  sudo apt-get install build-essential pkg-config libwayland-dev libxkbcommon-dev grim
   ```
 - **Fedora**:
   ```sh
-  sudo dnf install gcc pkgconf-pkg-config wayland-devel libxkbcommon-devel
+  sudo dnf install gcc pkgconf-pkg-config wayland-devel libxkbcommon-devel grim
   ```
 
 ### Build from Source
@@ -78,6 +78,8 @@ bind = SUPER SHIFT, A, exec, hyprannotations
 | `Delete` | **Delete** | Delete the currently selected annotation |
 | `Ctrl + Z` | **Undo** | Undo the last action on the current monitor |
 | `Ctrl + Shift + Z` | **Redo** | Redo previously undone actions |
+| `Ctrl + V` | **Paste Image** | Paste an image from the clipboard at the pointer position |
+| `Ctrl + C` | **Copy Screenshot** | Copy the active monitor with annotations, excluding the toolbar |
 | `Tab` | **Desktop Mode** | Pass pointer & keyboard input to desktop windows while keeping drawings visible |
 | `Escape` | **Cancel / Exit** | Cancel active text input, or close the overlay |
 | `Mouse Wheel` | **Stroke Width** | Scroll up/down to increase or decrease stroke size |

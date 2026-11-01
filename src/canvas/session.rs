@@ -232,6 +232,7 @@ mod tests {
             filled: false,
             text: "Baris 1\nBaris 2".into(),
             font_size: 20.,
+            image: None,
         });
         // Select tool clicking on line 2 (y in [38, 66])
         app.tool = Tool::Select;

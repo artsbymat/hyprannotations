@@ -17,6 +17,7 @@ cosmic-text = "0.14"
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 clap = { version = "4", features = ["derive"] }
+arboard = { version = "3.7", default-features = false, features = ["image-data", "wayland-data-control"] }
 
 [profile.release]
 lto = "thin"

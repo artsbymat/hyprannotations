@@ -73,6 +73,7 @@ impl State {
                         filled: false,
                         text: String::new(),
                         font_size: 12.,
+                        image: None,
                     };
                     self.renderer.draw(pix, &marker, v.scale);
                 }
@@ -83,7 +84,16 @@ impl State {
                     }
                 }
             }
-            ui::draw(pix, &self.app, tx / ts, ty / ts, ts * v.scale);
+            let hide_toolbar = self.screenshot.as_ref().is_some_and(|request| {
+                request.view == i
+                    && matches!(
+                        request.stage,
+                        ScreenshotStage::HidingToolbar | ScreenshotStage::WaitingForFrame
+                    )
+            });
+            if !hide_toolbar {
+                ui::draw(pix, &self.app, tx / ts, ty / ts, ts * v.scale);
+            }
             let (buffer, canvas) = self.pool.create_buffer(
                 width as i32,
                 height as i32,
@@ -120,6 +130,12 @@ impl State {
             v.layer.commit();
             v.dirty = false;
             v.pending = true;
+            if let Some(request) = &mut self.screenshot
+                && request.view == i
+                && request.stage == ScreenshotStage::HidingToolbar
+            {
+                request.stage = ScreenshotStage::WaitingForFrame;
+            }
         }
         Ok(())
     }
